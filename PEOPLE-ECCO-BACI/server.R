@@ -957,30 +957,24 @@ server <- function(input, output, session) {
   })
   
   # Attribute selector for plot
-  output$match_attr_select_ui <- renderUI({
-    v <- match_vect_data()
-    if (is.null(v)) return(NULL)
-    attr_names <- names(v)
-    if (length(attr_names) == 0) return(NULL)
-    div(style = "margin-top:12px;",
-        selectInput("match_plot_attr",
-                    label    = "Attribute to visualise",
-                    choices  = setNames(attr_names, attr_names),
-                    selected = attr_names[1],
-                    width    = "100%")
-    )
-  })
-  
-  # Plot card
+  # Plot card: attr selector at top, plot below
   output$match_plot_card_ui <- renderUI({
     v <- match_vect_data()
     if (is.null(v)) return(NULL)
+    attr_names <- names(v)
     div(class = "card", style = "height:100%;",
         div(class = "card-title",
             span(class = "icon", "\U0001f5fa"),
             "Attribute preview"
         ),
-        plotOutput("match_vect_plot", height = "560px")
+        if (length(attr_names) > 0) {
+          selectInput("match_plot_attr",
+                      label    = "Attribute to visualise",
+                      choices  = setNames(attr_names, attr_names),
+                      selected = attr_names[1],
+                      width    = "100%")
+        } else { NULL },
+        plotOutput("match_vect_plot", height = "480px")
     )
   })
   
@@ -995,6 +989,44 @@ server <- function(input, output, session) {
     }
   }, res = 96, bg = "white")
   
+  # -- Unique ID selector ----------------------------------------------------
+  output$match_uid_ui <- renderUI({
+    v <- match_vect_data()
+    if (is.null(v)) return(NULL)
+    attr_names <- names(v)
+    # Pre-fill from Tab 2 uid_field if available
+    pre_uid <- if (isTRUE(input$use_uid) &&
+                   !is.null(input$uid_field) &&
+                   input$uid_field %in% attr_names) {
+      input$uid_field
+    } else {
+      ""
+    }
+    tagList(
+      selectInput("match_uid_field",
+                  label    = "Unique feature ID (optional)",
+                  choices  = c("None (auto-generate)" = "", setNames(attr_names, attr_names)),
+                  selected = pre_uid,
+                  width    = "100%"),
+      uiOutput("match_uid_warning_ui")
+    )
+  })
+  
+  output$match_uid_warning_ui <- renderUI({
+    uid <- input$match_uid_field
+    if (is.null(uid) || nchar(uid) == 0) return(NULL)
+    v <- match_vect_data()
+    if (is.null(v)) return(NULL)
+    vals <- as.data.frame(v)[[uid]]
+    if (anyDuplicated(vals) > 0) {
+      p(style = "color:#c0392b; font-size:12px; margin:2px 0 0 0;",
+        paste0("! Column '", uid, "' has duplicate values and cannot be ",
+               "used as a unique ID."))
+    } else {
+      NULL
+    }
+  })
+  
   # -- Treatment attribute selector ------------------------------------------
   # Pre-fills from Tab 2 ci_field when carrying over from extraction result
   output$match_treatment_ui <- renderUI({
@@ -1007,10 +1039,28 @@ server <- function(input, output, session) {
     } else {
       attr_names[1]
     }
-    selectInput("match_treatment",
-                label    = "Treatment attribute",
-                choices  = setNames(attr_names, attr_names),
-                selected = pre_select,
+    tagList(
+      selectInput("match_treatment",
+                  label    = "Treatment attribute",
+                  choices  = setNames(attr_names, attr_names),
+                  selected = pre_select,
+                  width    = "100%"),
+      uiOutput("match_treat_value_ui")
+    )
+  })
+  
+  output$match_treat_value_ui <- renderUI({
+    v     <- match_vect_data()
+    treat <- input$match_treatment
+    if (is.null(v) || is.null(treat) || !treat %in% names(v)) return(NULL)
+    vals  <- sort(unique(na.omit(as.data.frame(v)[[treat]])))
+    if (length(vals) < 2) return(NULL)
+    # Default: if values are 0/1, pre-select 1; otherwise last (highest) value
+    default_val <- if (all(vals %in% c(0, 1))) { "1" } else { as.character(vals[length(vals)]) }
+    selectInput("match_treat_value",
+                label    = "Value indicating treatment (1 = treated)",
+                choices  = setNames(as.character(vals), as.character(vals)),
+                selected = default_val,
                 width    = "100%")
   })
   
@@ -1020,9 +1070,11 @@ server <- function(input, output, session) {
     v <- match_vect_data()
     if (is.null(v)) return(NULL)
     attr_names  <- names(v)
-    # Remove treatment field from covariate options
-    treat       <- input$match_treatment
-    covar_opts  <- if (!is.null(treat)) setdiff(attr_names, treat) else attr_names
+    # Remove treatment and UID fields from covariate options
+    treat      <- input$match_treatment
+    uid        <- input$match_uid_field
+    excl       <- c(treat, if (!is.null(uid) && nchar(uid) > 0) uid else NULL)
+    covar_opts <- setdiff(attr_names, excl)
     # Pre-select Tab 3 card-1 covariates that exist in this dataset
     tab3_sel    <- input$col_matchvars
     pre_select  <- if (!is.null(tab3_sel) && length(tab3_sel) > 0) {
@@ -1462,16 +1514,25 @@ server <- function(input, output, session) {
       if (!is.null(parsed)) mi_args$distance.options <- parsed
     }
     
+    # -- Unique ID: use selected field or auto-generate ----------------------
+    uid_field <- input$match_uid_field
+    if (is.null(uid_field) || nchar(uid_field) == 0) {
+      uid_field <- NULL   # run_matching will create .uid automatically
+    }
+    
     # -- Run -----------------------------------------------------------------
     progress <- shiny::Progress$new()
     progress$set(message = "Running matchit()...", value = 0.2)
     on.exit(progress$close())
     
+    treat_value <- input$match_treat_value
     result <- tryCatch(
       do.call(run_matching,
               c(list(x             = v,
                      col_treatment = treat,
-                     col_covars    = covars),
+                     col_covars    = covars,
+                     col_uid       = uid_field,
+                     treat_value   = treat_value),
                 mi_args)),
       error = function(e) {
         list(matchit_obj  = NULL,
@@ -1544,7 +1605,7 @@ server <- function(input, output, session) {
     res <- matching_result()
     req(!is.null(res) && !is.null(res$dropped))
     res$dropped
-  }, striped = TRUE, hover = TRUE, bordered = TRUE)
+  }, striped = TRUE, hover = TRUE, bordered = TRUE, na = "")
   
   # =========================================================================
   # -- Matching evaluation: Card 2 - interactive leaflet map ----------------
@@ -1554,16 +1615,18 @@ server <- function(input, output, session) {
   selected_id <- reactiveVal(NULL)
   
   # Helper: convert SpatVector to sf.
-  # .feature_id = the matchit row name (.row_id column if present, else seq).
-  # This is the same ID system used in .match_ids, so partner lookup is exact.
+  # .feature_id uses the UID column value (same as .match_ids now uses),
+  # so partner lookup from .match_ids is direct with no translation.
   matched_sf <- reactive({
-    res <- matching_result()
+    res       <- matching_result()
     req(!is.null(res) && !is.null(res$matched_data))
-    v      <- res$matched_data
-    sf_obj <- sf::st_as_sf(v)
-    if (".row_id" %in% names(sf_obj)) {
-      sf_obj$.feature_id <- as.character(sf_obj$.row_id)
+    v         <- res$matched_data
+    sf_obj    <- sf::st_as_sf(v)
+    uid_field <- isolate(input$match_uid_field)
+    if (!is.null(uid_field) && nchar(uid_field) > 0 && uid_field %in% names(sf_obj)) {
+      sf_obj$.feature_id <- as.character(sf_obj[[uid_field]])
     } else {
+      # Fallback: sequential (should not happen if UID was set correctly)
       sf_obj$.feature_id <- as.character(seq_len(nrow(sf_obj)))
     }
     sf_obj
@@ -1688,8 +1751,8 @@ server <- function(input, output, session) {
       match_ids_str <- df$.match_ids[df$.feature_id == clicked]
       partners      <- unlist(strsplit(match_ids_str, ","))
       partners      <- trimws(partners[nchar(trimws(partners)) > 0])
-      # .match_ids and .feature_id are both matchit row names, so no
-      # translation needed - partners are already valid .feature_id values
+      # .match_ids now contains UID values, same as .feature_id,
+      # so no translation needed
       selected_id(c(clicked, partners))
     }
   }, ignoreInit = TRUE)
@@ -1782,7 +1845,7 @@ server <- function(input, output, session) {
     
     # Subset to selected rows and drop internal columns
     sub <- df[df$.feature_id %in% sel, , drop = FALSE]
-    drop_cols <- c(".feature_id", ".match_ids", ".weights", ".subclass", ".row_id")
+    drop_cols <- c(".feature_id", ".match_ids", ".weights", ".subclass")
     sub <- sub[, setdiff(names(sub), drop_cols), drop = FALSE]
     
     # Add a role column for clarity
@@ -1792,5 +1855,342 @@ server <- function(input, output, session) {
     }
     sub
   }, striped = TRUE, hover = TRUE, bordered = TRUE)
+  
+  # =========================================================================
+  # -- Matching evaluation: Card 4 - cobalt diagnostics ---------------------
+  # =========================================================================
+  
+  # Reactive: compute all cobalt diagnostics once after matching
+  match_diagnostics <- reactive({
+    res <- matching_result()
+    req(!is.null(res) && !is.null(res$matchit_obj))
+    m_obj <- res$matchit_obj
+    
+    if (!requireNamespace("cobalt", quietly = TRUE)) {
+      return(list(error = "Package 'cobalt' is not installed."))
+    }
+    
+    method <- m_obj$info$method
+    
+    # Balance table (always available)
+    bal <- tryCatch(
+      get_balance_table(m_obj),
+      error = function(e) { list(error = conditionMessage(e)) }
+    )
+    
+    # Love plot (always available except for exact matching)
+    lp <- if (!is.null(method) && method == "exact") {
+      NULL
+    } else {
+      tryCatch(
+        get_love_plot(m_obj),
+        error = function(e) { NULL }
+      )
+    }
+    
+    # Overlap plots: one per covariate, skip for exact/cem
+    no_overlap <- c("exact", "cem")
+    overlap_plots <- if (!is.null(method) && method %in% no_overlap) {
+      list()
+    } else {
+      tryCatch(
+        get_balance_plots(m_obj),
+        error = function(e) { list() }
+      )
+    }
+    
+    list(
+      balance       = bal,
+      love_plot     = lp,
+      overlap_plots = overlap_plots,
+      method        = method
+    )
+  })
+  
+  # Card UI
+  output$match_eval_diag_card_ui <- renderUI({
+    res <- matching_result()
+    if (is.null(res) || is.null(res$matchit_obj)) return(NULL)
+    
+    diag <- match_diagnostics()
+    
+    if (!is.null(diag$error)) {
+      return(div(class = "card",
+                 div(class = "card-title",
+                     span(class = "icon", "\U0001f4ca"), "Matching diagnostics"),
+                 p(style = "color:#c0392b; font-size:13px;", paste0("! ", diag$error))
+      ))
+    }
+    
+    n_overlap <- length(diag$overlap_plots)
+    
+    div(class = "card",
+        div(class = "card-title",
+            span(class = "icon", "\U0001f4ca"),
+            paste0("Matching diagnostics (method: ", diag$method, ")")
+        ),
+        
+        # -- Balance table ----
+        strong(style = "font-size:13px;", "Covariate balance"),
+        p(style = "font-size:12px; color:#888; margin:4px 0 8px 0;",
+          "Std. mean difference < 0.1 indicates good balance (|SMD| threshold shown)."),
+        div(style = "overflow-x:auto; margin-bottom:12px;",
+            tableOutput("match_diag_bal_table")
+        ),
+        
+        # Sample sizes
+        if (!is.null(diag$balance$sample_sizes)) {
+          tagList(
+            strong(style = "font-size:13px;", "Sample sizes"),
+            div(style = "overflow-x:auto; margin-bottom:16px;",
+                tableOutput("match_diag_ss_table")
+            )
+          )
+        } else { NULL },
+        
+        div(class = "section-divider"),
+        
+        # -- Love plot ----
+        if (!is.null(diag$love_plot)) {
+          tagList(
+            strong(style = "font-size:13px;", "Love plot"),
+            p(style = "font-size:12px; color:#888; margin:4px 0 8px 0;",
+              "Standardised mean differences before and after matching. ",
+              "Dashed line at |SMD| = 0.1."),
+            plotOutput("match_diag_love_plot",
+                       height = paste0(max(200, 30 * length(diag$balance$balance_df[[1]])), "px")),
+            div(class = "section-divider")
+          )
+        } else { NULL },
+        
+        # -- Overlap plots ----
+        if (n_overlap > 0) {
+          tagList(
+            strong(style = "font-size:13px;",
+                   paste0("Covariate overlap (", n_overlap, " variable",
+                          if (n_overlap > 1) "s" else "", ")")),
+            p(style = "font-size:12px; color:#888; margin:4px 0 8px 0;",
+              "Distribution before (Unadjusted) and after (Adjusted) matching, ",
+              "by treatment group."),
+            uiOutput("match_diag_overlap_plots_ui")
+          )
+        } else { NULL }
+    )
+  })
+  
+  # Balance table render
+  output$match_diag_bal_table <- renderTable({
+    diag <- match_diagnostics()
+    req(!is.null(diag$balance) && is.null(diag$balance$error))
+    diag$balance$balance_df
+  }, striped = TRUE, hover = TRUE, bordered = TRUE)
+  
+  # Sample sizes render
+  output$match_diag_ss_table <- renderTable({
+    diag <- match_diagnostics()
+    req(!is.null(diag$balance$sample_sizes))
+    ss <- diag$balance$sample_sizes
+    cbind(Group = rownames(ss), ss)
+  }, striped = TRUE, bordered = TRUE)
+  
+  # Love plot render
+  output$match_diag_love_plot <- renderPlot({
+    diag <- match_diagnostics()
+    req(!is.null(diag$love_plot))
+    print(diag$love_plot)
+  }, res = 96, bg = "white")
+  
+  # Overlap plots: one plotOutput per covariate, rendered dynamically
+  output$match_diag_overlap_plots_ui <- renderUI({
+    diag <- match_diagnostics()
+    nms  <- names(diag$overlap_plots)
+    if (length(nms) == 0) return(NULL)
+    
+    plot_outputs <- lapply(nms, function(nm) {
+      pid <- paste0("match_diag_bal_", make.names(nm))
+      div(style = "margin-bottom:16px;",
+          strong(style = "font-size:12px; color:#555;", nm),
+          plotOutput(pid, height = "220px")
+      )
+    })
+    do.call(tagList, plot_outputs)
+  })
+  
+  # Register one renderPlot per overlap plot
+  observe({
+    diag <- match_diagnostics()
+    nms  <- names(diag$overlap_plots)
+    lapply(nms, function(nm) {
+      local({
+        nm_local <- nm
+        pid      <- paste0("match_diag_bal_", make.names(nm_local))
+        output[[pid]] <- renderPlot({
+          p <- diag$overlap_plots[[nm_local]]
+          req(!is.null(p))
+          print(p)
+        }, res = 96, bg = "white")
+      })
+    })
+  })
+  
+  # =========================================================================
+  # -- Matching evaluation: Card 5 - save matched units to file -------------
+  # =========================================================================
+  
+  output$match_eval_save_card_ui <- renderUI({
+    res <- matching_result()
+    if (is.null(res) || is.null(res$matched_data)) return(NULL)
+    
+    div(class = "card",
+        div(class = "card-title",
+            span(class = "icon", "\U0001f4be"),
+            "Save matched units"
+        ),
+        p(style = "font-size:13px; color:#666; margin-bottom:16px;",
+          "Save the matched SpatVector to a GeoPackage file (.gpkg) for use ",
+          "in later analysis or to skip matching when re-opening the app."),
+        div(style = "display:flex; align-items:flex-end; gap:10px;",
+            div(style = "flex:1;",
+                textInput("match_save_path",
+                          label       = "Output file path (without extension)",
+                          placeholder = "e.g. C:/Data/matched_units",
+                          width       = "100%")
+            ),
+            div(style = "margin-bottom:15px;",
+                actionButton("match_save_btn", "Save .gpkg",
+                             class = "btn btn-success btn-sm")
+            )
+        ),
+        uiOutput("match_save_status_ui")
+    )
+  })
+  
+  observeEvent(input$match_save_btn, {
+    res  <- matching_result()
+    path <- trimws(input$match_save_path)
+    
+    if (is.null(res) || is.null(res$matched_data)) {
+      output$match_save_status_ui <- renderUI(
+        p(style = "color:#c0392b; font-size:12px; margin-top:4px;",
+          "! No matched data available.")
+      )
+      return()
+    }
+    
+    if (nchar(path) == 0) {
+      output$match_save_status_ui <- renderUI(
+        p(style = "color:#c0392b; font-size:12px; margin-top:4px;",
+          "! Please enter a file path.")
+      )
+      return()
+    }
+    
+    out_path <- paste0(path, ".gpkg")
+    
+    tryCatch({
+      terra::writeVector(res$matched_data, out_path, overwrite = TRUE)
+      output$match_save_status_ui <- renderUI(
+        p(style = "color:#1e8449; font-size:12px; margin-top:4px;",
+          paste0("v Saved: ", out_path))
+      )
+    }, error = function(e) {
+      output$match_save_status_ui <- renderUI(
+        p(style = "color:#c0392b; font-size:12px; margin-top:4px;",
+          paste0("! Could not save file: ", conditionMessage(e)))
+      )
+    })
+  }, ignoreInit = TRUE)
+  
+  # =========================================================================
+  # -- Tab 6: Impact evaluation: matched pairs input ------------------------
+  # =========================================================================
+  
+  # Reactive: matched pairs vector from either matching output or file
+  baci_vect_data <- reactive({
+    if (input$baci_input_source == "from_matching") {
+      res <- matching_result()
+      if (is.null(res) || is.null(res$matched_data)) return(NULL)
+      res$matched_data
+    } else {
+      if (is.null(input$baci_vect_file)) return(NULL)
+      baci_vect_from_file()
+    }
+  })
+  
+  baci_vect_from_file <- reactive({
+    req(input$baci_vect_file)
+    paths    <- input$baci_vect_file$datapath
+    names_up <- input$baci_vect_file$name
+    new_paths <- file.path(dirname(paths), names_up)
+    file.rename(paths, new_paths)
+    is_shp <- endsWith(tolower(names_up), ".shp")
+    entry  <- if (any(is_shp)) { new_paths[is_shp] } else { new_paths[1] }
+    tryCatch(terra::vect(entry), error = function(e) { NULL })
+  })
+  
+  # Status / metadata
+  output$baci_vect_status_ui <- renderUI({
+    if (input$baci_input_source == "from_matching") {
+      res <- matching_result()
+      if (is.null(res) || is.null(res$matched_data)) {
+        return(p(class = "placeholder-msg",
+                 "No matching output yet. Run matching in the Matching
+                  evaluation tab first."))
+      }
+      v <- res$matched_data
+      div(class = "info-row", style = "margin-top:8px;",
+          span(class = "info-pill", paste0(nrow(v), " matched units")),
+          span(class = "info-pill", paste0(ncol(as.data.frame(v)), " attributes")),
+          span(class = "info-pill", "From matching output")
+      )
+    } else {
+      if (is.null(input$baci_vect_file)) return(NULL)
+      v <- baci_vect_from_file()
+      if (is.null(v)) {
+        return(p(style = "color:#c0392b; font-size:12px; margin-top:8px;",
+                 "! Could not read file."))
+      }
+      crs_name <- terra::crs(v, describe = TRUE)$name
+      div(class = "info-row", style = "margin-top:8px;",
+          span(class = "info-pill", paste0(nrow(v), " features")),
+          span(class = "info-pill", paste0(ncol(as.data.frame(v)), " attributes")),
+          if (!is.na(crs_name) && nchar(crs_name) > 0) {
+            span(class = "info-pill", crs_name)
+          } else { NULL }
+      )
+    }
+  })
+  
+  # BACI plot card: attr selector at top, plot below
+  output$baci_plot_card_ui <- renderUI({
+    v <- baci_vect_data()
+    if (is.null(v)) return(NULL)
+    attr_names <- names(v)
+    div(class = "card", style = "height:100%;",
+        div(class = "card-title",
+            span(class = "icon", "\U0001f5fa"),
+            "Vector preview"
+        ),
+        if (length(attr_names) > 0) {
+          selectInput("baci_plot_attr",
+                      label    = "Attribute to visualise",
+                      choices  = setNames(attr_names, attr_names),
+                      selected = attr_names[1],
+                      width    = "100%")
+        } else { NULL },
+        plotOutput("baci_vect_plot", height = "480px")
+    )
+  })
+  
+  output$baci_vect_plot <- renderPlot({
+    v <- baci_vect_data()
+    req(!is.null(v))
+    attr <- input$baci_plot_attr
+    if (!is.null(attr) && attr %in% names(v)) {
+      terra::plot(v, attr, main = attr)
+    } else {
+      terra::plot(v)
+    }
+  }, res = 96, bg = "white")
   
 }  # end server

@@ -7,6 +7,7 @@ library(sf)
 source("R/extract_covariates.R")
 source("R/check_multicollinearity.R")
 source("R/run_matching.R")
+source("R/evaluate_matching.R")
 
 if (requireNamespace("ragg", quietly = TRUE)) {
   options(shiny.useragg = TRUE)

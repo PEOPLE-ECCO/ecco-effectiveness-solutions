@@ -28,6 +28,11 @@
 #   col_treatment   Character. Name of the treatment attribute (must be 0/1).
 #   col_covars      Character vector. Names of the covariate attributes to
 #                   include in the formula.
+#   col_uid         Character. Name of a column containing unique feature IDs.
+#                   Used to safely re-attach geometry after matching (which
+#                   reorders rows). If NULL or not found, a synthetic ID is
+#                   created from row names. Strongly recommended when the
+#                   input has been subset (e.g. after NA-dropping).
 #   ...             Additional arguments passed directly to matchit(), e.g.
 #                   method, distance, ratio, replace, caliper, etc.
 #                   See ?MatchIt::matchit for the full list.
@@ -72,7 +77,10 @@
 #   summary(res$matchit_obj)
 #   terra::writeVector(res$matched_data, "matched_units.gpkg")
 # -----------------------------------------------------------------------------
-run_matching <- function(x, col_treatment, col_covars, ...) {
+run_matching <- function(x, col_treatment, col_covars,
+                         col_uid     = NULL,
+                         treat_value = NULL,
+                         ...) {
   
   # -- Validate inputs --------------------------------------------------------
   if (inherits(x, "SpatVector")) {
@@ -99,18 +107,43 @@ run_matching <- function(x, col_treatment, col_covars, ...) {
   
   errors <- character(0)
   
-  # -- Coerce treatment to 0/1 -----------------------------------------------
+  # -- Coerce treatment to 0/1 using treat_value ----------------------------
+  # treat_value: the value in col_treatment that represents treated units (=1).
+  # If NULL: use 1 if values are already 0/1, else use the larger of the two
+  # unique values (with a warning so the user knows what was assumed).
   treat_raw <- df[[col_treatment]]
-  if (!all(treat_raw %in% c(0, 1, NA))) {
-    u <- sort(unique(na.omit(treat_raw)))
-    if (length(u) != 2) {
-      stop("Treatment variable '", col_treatment,
-           "' must have exactly 2 unique non-NA values.")
+  u         <- sort(unique(na.omit(treat_raw)))
+  if (length(u) != 2) {
+    stop("Treatment variable '", col_treatment,
+         "' must have exactly 2 unique non-NA values (found: ",
+         length(u), ").")
+  }
+  # Determine which value maps to 1 (treated)
+  if (!is.null(treat_value)) {
+    tv <- tryCatch(as.character(treat_value), error = function(e) NULL)
+    u_char <- as.character(u)
+    if (!tv %in% u_char) {
+      stop("treat_value '", treat_value, "' not found in '", col_treatment,
+           "'. Available values: ", paste(u, collapse = ", "))
     }
-    treat_01 <- as.integer(treat_raw == u[2])
-    df[[col_treatment]] <- treat_01
-    errors <- c(errors,
-                paste0("Treatment coerced to 0/1: '", u[1], "' -> 0, '", u[2], "' -> 1."))
+    treat_1_val <- u[u_char == tv]
+  } else if (all(u %in% c(0, 1))) {
+    treat_1_val <- 1   # standard 0/1 encoding, no message needed
+  } else {
+    treat_1_val <- u[2]   # default: larger value = treated
+    errors <- c(errors, paste0(
+      "treat_value not specified; assuming '", treat_1_val,
+      "' = treated. Set treat_value explicitly to suppress this warning."))
+  }
+  treat_0_val <- u[u != treat_1_val]
+  if (!all(treat_raw %in% c(treat_0_val, treat_1_val, NA))) {
+    stop("Unexpected values in treatment column.")
+  }
+  df[[col_treatment]] <- as.integer(treat_raw == treat_1_val)
+  if (!all(u %in% c(0, 1))) {
+    errors <- c(errors, paste0(
+      "Treatment coerced to 0/1: '", treat_0_val, "' -> 0, '",
+      treat_1_val, "' -> 1."))
   }
   
   # -- Drop rows with missing/non-finite values in covariates or treatment ----
@@ -136,18 +169,58 @@ run_matching <- function(x, col_treatment, col_covars, ...) {
   
   dropped_info <- NULL
   if (n_dropped > 0) {
-    dropped_ids  <- rownames(df)[!keep]
+    dropped_idx <- which(!keep)
+    # Use UID column for identification if available, else row names
+    if (!is.null(col_uid) && col_uid %in% names(df)) {
+      dropped_ids <- as.character(df[[col_uid]][dropped_idx])
+      id_col_name <- col_uid
+    } else {
+      dropped_ids <- rownames(df)[dropped_idx]
+      id_col_name <- "row_id"
+    }
+    treat_vals <- df[[col_treatment]][dropped_idx]
+    role_vals  <- ifelse(treat_vals == 1, "Treatment", "Control")
     dropped_info <- data.frame(
-      row_id  = dropped_ids,
-      reason  = ifelse(!is_complete[!keep], "missing value(s)",
-                       "non-finite value(s)"),
+      ID        = dropped_ids,
+      Role      = role_vals,
+      reason    = ifelse(!is_complete[dropped_idx], "missing value(s)",
+                         "non-finite value(s)"),
       stringsAsFactors = FALSE
     )
+    names(dropped_info)[1] <- id_col_name
     errors <- c(errors, paste0(
       n_dropped, " unit(s) dropped before matching due to missing or ",
       "non-finite values in: ", paste(miss_cols, collapse = ", "), "."))
     df <- df[keep, , drop = FALSE]
     if (is_spat) x <- x[keep, ]
+  }
+  
+  # -- Unique ID: create or validate ----------------------------------------
+  # A unique ID column is used to safely re-attach geometry to matched_df
+  # after matchit() (which reorders/subsets rows). Without a reliable key,
+  # row-index matching can silently scramble attributes.
+  uid_created <- FALSE
+  if (is.null(col_uid) || !col_uid %in% names(df)) {
+    # Create a synthetic unique ID from current row names
+    col_uid    <- ".uid"
+    df$.uid    <- rownames(df)
+    uid_created <- TRUE
+    if (is_spat) {
+      # Add to SpatVector attribute table too
+      uid_df         <- as.data.frame(x)
+      uid_df$.uid    <- rownames(uid_df)
+      terra::values(x) <- uid_df
+    }
+    if (!uid_created) {
+      errors <- c(errors, "No unique ID supplied; auto-generated from row names.")
+    }
+  } else {
+    # Validate: check uniqueness
+    uid_vals <- df[[col_uid]]
+    if (anyDuplicated(uid_vals) > 0) {
+      errors <- c(errors, paste0("Column '", col_uid, "' has duplicate values; ",
+                                 "using it as UID may produce incorrect geometry matching."))
+    }
   }
   
   # -- Build formula ---------------------------------------------------------
@@ -188,15 +261,29 @@ run_matching <- function(x, col_treatment, col_covars, ...) {
                 miss_cols    = miss_cols))
   }
   
-  # -- Store matchit row names as .row_id -----------------------------------
-  # These are the authoritative IDs used in match.matrix and $subclass.
-  # We must preserve them through the terra reconstruction so the Shiny
-  # click handler can look up partners reliably.
-  matched_df$.row_id <- rownames(matched_df)
+  # -- Build .match_ids column using UID values -----------------------------
+  # build_match_ids returns matchit internal row names; we translate these
+  # to UID values so .match_ids is human-readable and consistent with col_uid.
+  match_rn_col <- build_match_ids(m_obj, matched_df)
   
-  # -- Build .match_ids column -----------------------------------------------
-  match_ids_col <- build_match_ids(m_obj, matched_df)
+  # Map: matchit row name -> UID value
+  # matched_df row names are the matchit row names (keys into match.matrix)
+  rn_to_uid <- setNames(
+    as.character(matched_df[[col_uid]]),
+    rownames(matched_df)
+  )
+  
+  # Translate each comma-separated string of row names to UID values
+  match_ids_col <- vapply(match_rn_col, function(rns_str) {
+    if (nchar(rns_str) == 0) return("")
+    rns  <- strsplit(rns_str, ",")[[1]]
+    uids <- rn_to_uid[rns]
+    uids <- uids[!is.na(uids)]
+    paste(uids, collapse = ",")
+  }, character(1))
+  
   matched_df$.match_ids <- match_ids_col
+  # No .row_id column needed: col_uid is the authoritative key
   
   # -- Sanitise matched_df for terra compatibility ---------------------------
   # terra::values<- requires a plain data frame with only atomic columns.
@@ -221,28 +308,34 @@ run_matching <- function(x, col_treatment, col_covars, ...) {
   
   matched_df_clean <- sanitise_for_terra(matched_df)
   
-  # -- Attach geometry if input was SpatVector --------------------------------
+  # -- Attach geometry using UID as the join key ----------------------------
+  # This is the safe approach: we never rely on row index ordering.
+  # matched_df_clean rows are joined to x geometries via col_uid.
   if (is_spat) {
-    orig_rownames <- rownames(df)
-    kept_rownames <- rownames(matched_df_clean)
-    keep_idx      <- match(kept_rownames, orig_rownames)
-    keep_idx      <- keep_idx[!is.na(keep_idx)]
+    # Build a geometry-only SpatVector with the UID column
+    geom_df      <- as.data.frame(x)             # attributes of NA-dropped x
+    geom_df$.wkt <- terra::geom(x, wkt = TRUE)   # one WKT string per feature
     
-    geom_subset <- x[keep_idx, ]
+    # Join matched attributes onto geometry via UID
+    merged <- merge(geom_df[, c(col_uid, ".wkt")],
+                    matched_df_clean,
+                    by      = col_uid,
+                    all.x   = FALSE,
+                    all.y   = FALSE,
+                    sort    = FALSE)
     
-    # Reorder to match geometry row order
-    row_order      <- match(orig_rownames[keep_idx], kept_rownames)
-    vals_to_assign <- matched_df_clean[row_order, , drop = FALSE]
-    rownames(vals_to_assign) <- NULL
+    if (nrow(merged) == 0) {
+      stop("UID-based geometry merge produced 0 rows. ",
+           "Check that '", col_uid, "' is present in both datasets.")
+    }
     
-    # Rebuild SpatVector from geometry + attributes.
-    # Safer than terra::values<- which is strict about column types.
-    # Extract geometry as WKT, combine with attributes, reconstruct.
-    geom_wkt <- terra::geom(geom_subset, wkt = TRUE)
-    out      <- terra::vect(cbind(vals_to_assign,
-                                  geometry = geom_wkt),
-                            geom = "geometry",
-                            crs  = terra::crs(geom_subset))
+    wkt_col <- merged$.wkt
+    merged$.wkt <- NULL
+    rownames(merged) <- NULL
+    
+    out <- terra::vect(cbind(merged, geometry = wkt_col),
+                       geom = "geometry",
+                       crs  = terra::crs(x))
   } else {
     out <- matched_df_clean
   }
@@ -262,8 +355,9 @@ run_matching <- function(x, col_treatment, col_covars, ...) {
 # -----------------------------------------------------------------------------
 # build_match_ids()
 #
-# Internal helper. Derives a character vector of comma-separated match IDs
-# from the match.matrix component of a matchit object.
+# Internal helper. Derives a character vector of comma-separated matchit
+# internal row names from the match.matrix or subclass components.
+# The caller translates these row names to UID values.
 #
 # For treated units: IDs are the matched control row names.
 # For control units: IDs are the treated row names they were matched to.

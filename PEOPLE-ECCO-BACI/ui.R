@@ -88,7 +88,7 @@ ui <- fluidPage(
       
       div(class = "card",
           div(class = "card-title",
-              span(class = "icon", "📁"),
+              span(class = "icon", "\U0001f4c1"),
               "From input vector"
           ),
           p(style = "font-size:13px; color:#666; margin-bottom:18px;",
@@ -100,7 +100,7 @@ ui <- fluidPage(
       
       div(class = "card",
           div(class = "card-title",
-              span(class = "icon", "💾"),
+              span(class = "icon", "\U0001f4be"),
               "From additional sources"
           ),
           p(style = "font-size:13px; color:#666; margin-bottom:20px;",
@@ -127,7 +127,7 @@ ui <- fluidPage(
         column(5,
                div(class = "card",
                    div(class = "card-title",
-                       span(class = "icon", "📂"),
+                       span(class = "icon", "\U0001f4c2"),
                        "Matching dataset"
                    ),
                    p(style = "font-size:13px; color:#666; margin-bottom:16px;",
@@ -154,7 +154,7 @@ ui <- fluidPage(
                                    accept      = c(".gpkg", ".geojson", ".json", ".shp",
                                                    ".dbf", ".shx", ".prj", ".cpg"),
                                    multiple    = TRUE,
-                                   buttonLabel = "Browse…",
+                                   buttonLabel = "Browse\u2026",
                                    placeholder = "No file selected")
                      )
                    ),
@@ -163,6 +163,9 @@ ui <- fluidPage(
                    uiOutput("match_vect_status_ui"),
                    
                    div(class = "section-divider"),
+                   
+                   # Unique feature ID selector
+                   uiOutput("match_uid_ui"),
                    
                    # Treatment attribute selector
                    uiOutput("match_treatment_ui"),
@@ -180,7 +183,7 @@ ui <- fluidPage(
                # -- Card 2: Matching parameters ------------------------------------
                div(class = "card",
                    div(class = "card-title",
-                       span(class = "icon", "⚙"),
+                       span(class = "icon", "\u2699"),
                        "Matching parameters"
                    ),
                    p(style = "font-size:13px; color:#666; margin-bottom:16px;",
@@ -237,7 +240,7 @@ ui <- fluidPage(
                )
         ),
         
-        # Right column: attribute plot + multicollinearity output
+        # Right column: plot card (attr selector inside), then multicol
         column(7,
                uiOutput("match_plot_card_ui"),
                uiOutput("match_multicol_output_ui")
@@ -259,30 +262,60 @@ ui <- fluidPage(
       uiOutput("match_eval_map_card_ui"),
       
       # Card 3: attribute table for selected unit and its matches
-      uiOutput("match_eval_attr_card_ui")
+      uiOutput("match_eval_attr_card_ui"),
+      
+      # Card 4: cobalt matching diagnostics
+      uiOutput("match_eval_diag_card_ui"),
+      
+      # Card 5: save matched units to file
+      uiOutput("match_eval_save_card_ui")
     ),
     
     # -- Tab 6: Impact evaluation ---------------------------------------------
     tabPanel(
       title = "Impact evaluation",
+      
       h3("Impact evaluation"),
-      p("Tab info."),
-      div(class = "card",
-          div(class = "card-title", "Control-impact pairs"),
-          p("Stand-alone with pre-defined matching results, or use output of previous step."),
-          fileInput("uoa_vec", "Choose file", accept = c(".shp",".geojson","application/json"))
-      ),
-      div(class = "card",
-          div(class = "card-title", "Before-after"),
-          p("These inputs correspond to outputs of other PEOPLE-ECCO tools."),
-          fileInput("fn_before", 'Choose impact variable for "before" period (optional)', accept = ".tif"),
-          fileInput("fn_after",  'Choose impact variable for "after" period (optional)')
-      ),
-      div(class = "card",
-          div(class = "card-title", "Effect (or after-only)"),
-          fileInput("fn_effect", 'Choose impact variable effect (optional)')
-      ),
-      actionButton("click_baci", "Run impact evaluation", class = "btn-lg btn-success")
+      p("Some info about this tab."),
+      
+      fluidRow(
+        column(5,
+               div(class = "card",
+                   div(class = "card-title",
+                       span(class = "icon", "\U0001f4c2"),
+                       "Matched control-impact pairs"
+                   ),
+                   p(style = "font-size:13px; color:#666; margin-bottom:16px;",
+                     "Provide the SpatVector of matched control-impact pairs. Use
+               the output from the Matching evaluation tab, or load an
+               existing file from disk."),
+                   radioButtons("baci_input_source",
+                                label    = NULL,
+                                choices  = c(
+                                  "Use output from Matching evaluation tab" = "from_matching",
+                                  "Load from file"                          = "from_file"
+                                ),
+                                selected = "from_matching"
+                   ),
+                   conditionalPanel(
+                     condition = "input.baci_input_source == 'from_file'",
+                     div(style = "margin-top:8px;",
+                         fileInput("baci_vect_file",
+                                   label       = "Browse for a vector file",
+                                   accept      = c(".gpkg", ".geojson", ".json", ".shp",
+                                                   ".dbf", ".shx", ".prj", ".cpg"),
+                                   multiple    = TRUE,
+                                   buttonLabel = "Browse\u2026",
+                                   placeholder = "No file selected")
+                     )
+                   ),
+                   uiOutput("baci_vect_status_ui")
+               )
+        ),
+        column(7,
+               uiOutput("baci_plot_card_ui")
+        )
+      )
     ),
     
     # -- Tab 7: Impact evaluation results ------------------------------------
