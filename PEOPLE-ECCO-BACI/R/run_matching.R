@@ -261,6 +261,15 @@ run_matching <- function(x, col_treatment, col_covars,
                 miss_cols    = miss_cols))
   }
   
+  # -- Rename MatchIt-added columns to dot-prefix convention ----------------
+  # MatchIt adds: "distance" (propensity score / distance metric),
+  #               ".weights" and ".subclass" (already dot-prefixed by MatchIt).
+  # We rename "distance" -> ".distance" so users can distinguish app-added
+  # columns from their original data attributes.
+  if ("distance" %in% names(matched_df)) {
+    names(matched_df)[names(matched_df) == "distance"] <- ".distance"
+  }
+  
   # -- Build .match_ids column using UID values -----------------------------
   # build_match_ids returns matchit internal row names; we translate these
   # to UID values so .match_ids is human-readable and consistent with col_uid.

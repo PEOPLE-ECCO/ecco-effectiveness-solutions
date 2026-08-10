@@ -48,10 +48,13 @@ ui <- fluidPage(
       p("General overview of solution, links to user handbook, etc.")
     ),
     
-    # -- Tab 2: Vector Input --------------------------------------------------
+    # -- Tab 2: Vector input & Matching covariates ---------------------------
     tabPanel(
-      title = "Vector Input",
+      title = "Vector & Covariates",
       
+      h3("Vector input & Matching covariates"),
+      
+      # -- Section 1: Vector file input + attribute preview ------------------
       div(class = "card",
           div(class = "card-title", span(class = "icon", "\U0001f4c2"), "Vector Input"),
           p(style = "font-size:13px; color:#666; margin-bottom:18px;",
@@ -76,15 +79,14 @@ ui <- fluidPage(
         column(7,
                uiOutput("vector_plot_card_ui")
         )
-      )
-    ),
-    
-    # -- Tab 3: Matching covariates -------------------------------------------
-    tabPanel(
-      title = "Matching covariates",
+      ),
       
-      h3("Matching covariates"),
-      p("Some info about this tab."),
+      # -- Section 2: Matching covariates ------------------------------------
+      div(style = "margin-top:8px;",
+          h4("Matching covariates"),
+          p(style = "font-size:13px; color:#666;",
+            "Select or load the covariate layers to use in matching.")
+      ),
       
       div(class = "card",
           div(class = "card-title",
@@ -93,8 +95,7 @@ ui <- fluidPage(
           ),
           p(style = "font-size:13px; color:#666; margin-bottom:18px;",
             "Select attributes already present in the input vector file to use
-           as matching covariates. The list is populated from the vector
-           loaded in the Vector Input tab."),
+           as matching covariates."),
           uiOutput("matchvars_select_ui")
       ),
       
@@ -115,14 +116,15 @@ ui <- fluidPage(
     ),
     
     
-    # -- Tab 4: Matching input ------------------------------------------------
+    # -- Tab 3: Matching analysis --------------------------------------------
     tabPanel(
-      title = "Matching input",
+      title = "Matching analysis",
       
-      h3("Matching input"),
-      p("Some info about this tab."),
+      h3("Matching analysis"),
+      p("Set up the matching dataset, configure parameters, run matching,
+         and evaluate results."),
       
-      # -- Card 1: matching dataset input ------------------------------------
+      # -- Section 1: Input & parameters ------------------------------------
       fluidRow(
         column(5,
                div(class = "card",
@@ -132,20 +134,16 @@ ui <- fluidPage(
                    ),
                    p(style = "font-size:13px; color:#666; margin-bottom:16px;",
                      "Provide the SpatVector containing treatment indicator and
-               matching covariates. Use the output from the Matching
-               covariates tab, or load an existing file from disk."),
-                   
-                   # Option toggle
+               matching covariates. Use the output from the Vector & Covariates
+               tab, or load an existing file from disk."),
                    radioButtons("match_input_source",
                                 label    = NULL,
                                 choices  = c(
-                                  "Use output from Matching covariates tab" = "from_tab",
+                                  "Use output from Vector & Covariates tab" = "from_tab",
                                   "Load from file"                          = "from_file"
                                 ),
                                 selected = "from_tab"
                    ),
-                   
-                   # File input (only shown when loading from file)
                    conditionalPanel(
                      condition = "input.match_input_source == 'from_file'",
                      div(style = "margin-top:8px;",
@@ -158,29 +156,15 @@ ui <- fluidPage(
                                    placeholder = "No file selected")
                      )
                    ),
-                   
-                   # Status / metadata
                    uiOutput("match_vect_status_ui"),
-                   
                    div(class = "section-divider"),
-                   
-                   # Unique feature ID selector
                    uiOutput("match_uid_ui"),
-                   
-                   # Treatment attribute selector
                    uiOutput("match_treatment_ui"),
-                   
-                   # Covariate selector
                    uiOutput("match_covars_ui"),
-                   
-                   # Multicollinearity checkbox
                    uiOutput("match_multicol_check_ui"),
-                   
-                   # Attribute selector for plot
                    uiOutput("match_attr_select_ui")
                ),
                
-               # -- Card 2: Matching parameters ------------------------------------
                div(class = "card",
                    div(class = "card-title",
                        span(class = "icon", "\u2699"),
@@ -190,49 +174,23 @@ ui <- fluidPage(
                      "Parameters passed to ",
                      tags$code("MatchIt::matchit()"),
                      ". Formula and data are generated from the selections above."),
-                   
-                   # -- Core parameters (always shown) -------------------------------
                    selectInput("mi_method", label = "method",
                                choices  = c("nearest","optimal","full","quick","genetic",
                                             "cem","exact","cardinality","subclass"),
-                               selected = "nearest",
-                               width    = "100%"),
-                   
+                               selected = "nearest", width = "100%"),
                    selectInput("mi_estimand", label = "estimand",
                                choices  = c("ATT","ATC","ATE"),
-                               selected = "ATT",
-                               width    = "100%"),
-                   
-                   # 1. distance (hidden for exact/cem/cardinality)
+                               selected = "ATT", width = "100%"),
                    uiOutput("mi_distance_ui"),
-                   
-                   # 2. replace + ratio
                    uiOutput("mi_replace_ratio_ui"),
-                   
-                   # 3. caliper
                    uiOutput("mi_caliper_ui"),
-                   
-                   # 4. m.order (nearest only)
                    uiOutput("mi_morder_ui"),
-                   
-                   # 5. discard + reestimate (PS only)
                    uiOutput("mi_discard_ui"),
-                   
-                   # 6. exact + antiexact
                    uiOutput("mi_exact_ui"),
-                   
-                   # 7. method-specific extras (subclass / cem k2k)
                    uiOutput("mi_method_extras_ui"),
-                   
-                   # 8. s.weights
                    uiOutput("mi_sweights_ui"),
-                   
-                   # 9. mahvars (advanced, PS only)
                    uiOutput("mi_mahvars_ui"),
-                   
-                   # 10. distance.options (advanced)
                    uiOutput("mi_dist_options_ui"),
-                   
                    div(style = "margin-top:20px;",
                        actionButton("click_matching", "Run matching",
                                     class = "btn-success btn-lg", width = "100%")
@@ -240,34 +198,23 @@ ui <- fluidPage(
                )
         ),
         
-        # Right column: plot card (attr selector inside), then multicol
         column(7,
                uiOutput("match_plot_card_ui"),
                uiOutput("match_multicol_output_ui")
         )
-      )
-    ),
-    
-    # -- Tab 5: Matching evaluation ------------------------------------------
-    tabPanel(
-      title = "Matching evaluation",
+      ),
       
-      h3("Matching evaluation"),
-      p("Review the matched dataset, assess covariate balance, and save outputs."),
+      # -- Section 2: Evaluation (appears after matching) -------------------
+      div(style = "margin-top:8px;",
+          h4("Matching evaluation"),
+          p(style = "font-size:13px; color:#666;",
+            "Review matched units, assess balance, and save results.")
+      ),
       
-      # Card 1: dropped units diagnostics (shown only when units were dropped)
       uiOutput("match_eval_dropped_card_ui"),
-      
-      # Card 2: interactive map of matched units
       uiOutput("match_eval_map_card_ui"),
-      
-      # Card 3: attribute table for selected unit and its matches
       uiOutput("match_eval_attr_card_ui"),
-      
-      # Card 4: cobalt matching diagnostics
       uiOutput("match_eval_diag_card_ui"),
-      
-      # Card 5: save matched units to file
       uiOutput("match_eval_save_card_ui")
     ),
     
@@ -309,21 +256,27 @@ ui <- fluidPage(
                                    placeholder = "No file selected")
                      )
                    ),
-                   uiOutput("baci_vect_status_ui")
+                   uiOutput("baci_vect_status_ui"),
+                   
+                   div(class = "section-divider"),
+                   
+                   # Column role selectors (pre-filled from matching tab when available)
+                   uiOutput("baci_col_selectors_ui")
                )
         ),
         column(7,
                uiOutput("baci_plot_card_ui")
         )
-      )
+      ),
+      
+      # Card 2: impact assessment method selection
+      uiOutput("baci_method_card_ui"),
+      
+      # Card 3: results (appears after running impact assessment)
+      uiOutput("baci_results_card_ui")
     ),
     
-    # -- Tab 7: Impact evaluation results ------------------------------------
-    tabPanel(
-      title = "Impact evaluation results",
-      h3("Impact evaluation results"),
-      p("Inspect outputs, or combine with previous tab.")
-    )
+    
     
   )  # end tabsetPanel
 )  # end fluidPage
