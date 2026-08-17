@@ -272,8 +272,39 @@ ui <- fluidPage(
       # Card 2: impact assessment method selection
       uiOutput("baci_method_card_ui"),
       
-      # Card 3: results (appears after running impact assessment)
-      uiOutput("baci_results_card_ui")
+      # Static map controls: always in DOM, populated via updateSelectInput
+      # when results arrive. Must NOT be inside renderUI to stay stable.
+      conditionalPanel(
+        condition = "output.baci_results_ready",
+        div(class = "card",
+            div(class = "card-title",
+                span(class = "icon", "\U0001f5fa"),
+                "Impact assessment results"),
+            uiOutput("baci_results_summary_ui"),
+            fluidRow(
+              column(6,
+                     selectInput("baci_map_var",
+                                 label    = "Variable to visualise",
+                                 choices  = character(0),
+                                 width    = "100%")
+              ),
+              column(6,
+                     div(style = "margin-top:25px;",
+                         checkboxInput("baci_grey_nonsig",
+                                       label = "Grey out non-significant units (p > 0.05)",
+                                       value = FALSE)
+                     )
+              )
+            ),
+            leafletOutput("baci_result_map", height = "460px"),
+            uiOutput("baci_result_detail_ui")
+        ),
+        # Pooled results table (shown instead of map for pooled analysis)
+        uiOutput("baci_pooled_card_ui"),
+        
+        # Save card: below results
+        uiOutput("baci_save_card_ui")
+      )
     ),
     
     

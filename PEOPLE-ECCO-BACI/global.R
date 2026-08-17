@@ -15,3 +15,7 @@ if (requireNamespace("ragg", quietly = TRUE)) {
   options(shiny.useragg = TRUE)
 }
 
+
+# Increase maximum file upload size (default is 5MB)
+options(shiny.maxRequestSize = 50 * 1024^2)   # 50 MB
+

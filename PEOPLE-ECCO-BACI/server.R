@@ -3,6 +3,17 @@ server <- function(input, output, session) {
   # Null coalescing helper
   `%||%` <- function(a, b) if (!is.null(a)) a else b
   
+  # Helper: convert SpatVector to sf in WGS84 for leaflet display.
+  # Leaflet requires EPSG:4326; this reprojects for display only -- the
+  # original SpatVector is never modified.
+  to_leaflet_sf <- function(v) {
+    sf_obj <- sf::st_as_sf(v)
+    if (!sf::st_is_longlat(sf_obj)) {
+      sf_obj <- sf::st_transform(sf_obj, 4326)
+    }
+    sf_obj
+  }
+  
   # -- Vector: load ------------------------------------------------------------
   
   vect_data <- reactive({
@@ -1621,12 +1632,17 @@ server <- function(input, output, session) {
     res       <- matching_result()
     req(!is.null(res) && !is.null(res$matched_data))
     v         <- res$matched_data
-    sf_obj    <- sf::st_as_sf(v)
+    sf_obj    <- to_leaflet_sf(v)
+    # .feature_id must match the ID system used in .match_ids.
+    # Priority: .uid (auto-generated or user UID stored internally) >
+    #           user uid_field > sequential fallback.
     uid_field <- isolate(input$match_uid_field)
-    if (!is.null(uid_field) && nchar(uid_field) > 0 && uid_field %in% names(sf_obj)) {
+    if (".uid" %in% names(sf_obj)) {
+      sf_obj$.feature_id <- as.character(sf_obj[[".uid"]])
+    } else if (!is.null(uid_field) && nchar(uid_field) > 0 &&
+               uid_field %in% names(sf_obj)) {
       sf_obj$.feature_id <- as.character(sf_obj[[uid_field]])
     } else {
-      # Fallback: sequential (should not happen if UID was set correctly)
       sf_obj$.feature_id <- as.character(seq_len(nrow(sf_obj)))
     }
     sf_obj
@@ -1653,10 +1669,13 @@ server <- function(input, output, session) {
       ))
     }
     
-    v         <- res$matched_data
-    treat_col <- isolate(input$match_treatment)
-    n_treat   <- if (!is.null(treat_col) && treat_col %in% names(v)) {
-      sum(as.data.frame(v)[[treat_col]] == 1, na.rm = TRUE)
+    v           <- res$matched_data
+    treat_col   <- isolate(input$match_treatment)
+    treat_val   <- isolate(input$match_treat_value)
+    n_treat <- if (!is.null(treat_col) && treat_col %in% names(v)) {
+      tv  <- as.character(treat_val)
+      col <- as.character(as.data.frame(v)[[treat_col]])
+      sum(col == tv, na.rm = TRUE)
     } else { NA }
     n_control <- if (!is.na(n_treat)) nrow(v) - n_treat else NA
     
@@ -1685,9 +1704,12 @@ server <- function(input, output, session) {
   feature_colours <- reactive({
     sf_obj    <- matched_sf()
     treat_col <- isolate(input$match_treatment)
+    treat_val <- isolate(input$match_treat_value)
     df        <- sf::st_drop_geometry(sf_obj)
-    if (!is.null(treat_col) && treat_col %in% names(df)) {
-      ifelse(df[[treat_col]] == 1, COL_TREAT, COL_CONTROL)
+    if (!is.null(treat_col) && treat_col %in% names(df) &&
+        !is.null(treat_val)) {
+      tv <- as.character(treat_val)
+      ifelse(as.character(df[[treat_col]]) == tv, COL_TREAT, COL_CONTROL)
     } else {
       rep("#3498db", nrow(df))
     }
@@ -1845,20 +1867,19 @@ server <- function(input, output, session) {
     
     # Subset to selected rows and drop internal columns
     sub <- df[df$.feature_id %in% sel, , drop = FALSE]
-    # Hide internal app columns from the attribute table display.
-    # Dot-prefixed columns added during matching:
-    #   .weights   - matching weights (use in weighted analysis)
-    #   .subclass  - pair/subclass membership
-    #   .distance  - propensity score or distance metric
-    #   .match_ids - comma-separated UID(s) of matched partner(s)
-    #   .uid       - auto-generated unique ID (if no UID was supplied)
-    drop_cols <- c(".feature_id", ".match_ids", ".weights",
-                   ".subclass", ".distance", ".uid", ".wkt")
+    # Show .uid and .match_ids (useful for tracing pairs);
+    # hide .subclass (internal matchit grouping), .weights, .distance,
+    # .feature_id, .wkt (internal app columns).
+    drop_cols <- c(".feature_id", ".subclass", ".weights", ".distance", ".wkt")
     sub <- sub[, setdiff(names(sub), drop_cols), drop = FALSE]
     
-    # Add a role column for clarity
-    if (!is.null(treat_col) && treat_col %in% names(sub)) {
-      sub$.role <- ifelse(sub[[treat_col]] == 1, "Treated", "Control")
+    # Add a role column using treat_value for comparison (supports character/factor)
+    treat_val_sel <- isolate(input$match_treat_value)
+    if (!is.null(treat_col) && treat_col %in% names(sub) &&
+        !is.null(treat_val_sel)) {
+      tv <- as.character(treat_val_sel)
+      sub$.role <- ifelse(as.character(sub[[treat_col]]) == tv,
+                          "Treated", "Control")
       sub <- sub[, c(".role", setdiff(names(sub), ".role")), drop = FALSE]
     }
     sub
@@ -2298,11 +2319,6 @@ server <- function(input, output, session) {
     )
   })
   
-  output$baci_results_card_ui_outer <- renderUI({
-    # Rendered outside the method card so it appears as a separate card
-    uiOutput("baci_results_card_ui")
-  })
-  
   output$baci_method_inputs_ui <- renderUI({
     method <- input$baci_method
     if (is.null(method) || nchar(method) == 0) return(NULL)
@@ -2355,17 +2371,26 @@ server <- function(input, output, session) {
       NULL
       
     } else if (src_val == "from_vector") {
-      # Attribute selector from the matched pairs vector
-      v    <- baci_vect_data()
+      # Multi-select attribute selector from the matched pairs vector
+      v            <- baci_vect_data()
       attr_choices <- if (!is.null(v)) names(v) else character(0)
-      attr_id <- paste0("ie_attr_", slot_id)
-      cur_sel <- input[[attr_id]]
+      attr_id      <- paste0("ie_attr_", slot_id)
+      cur_sel      <- input[[attr_id]]
+      valid_sel    <- cur_sel[cur_sel %in% attr_choices]
       if (length(attr_choices) > 0) {
-        selectInput(attr_id,
-                    label    = "Attribute in matched pairs vector",
-                    choices  = setNames(attr_choices, attr_choices),
-                    selected = if (!is.null(cur_sel) && cur_sel %in% attr_choices) cur_sel else attr_choices[1],
-                    width    = "100%")
+        tagList(
+          selectInput(attr_id,
+                      label    = paste0("Attribute(s) in matched pairs vector (",
+                                        slot_id, ")"),
+                      choices  = setNames(attr_choices, attr_choices),
+                      selected = if (length(valid_sel) > 0) valid_sel else NULL,
+                      multiple = TRUE,
+                      width    = "100%"),
+          # Name-match warning for before/after slots (not effect)
+          if (slot_id %in% c("before", "after")) {
+            uiOutput(paste0("ie_namematch_warn_", slot_id))
+          } else { NULL }
+        )
       } else {
         p(style = "color:#e67e22; font-size:12px;",
           "Load matched pairs vector in Card 1 first.")
@@ -2639,6 +2664,38 @@ server <- function(input, output, session) {
     })
   })
   
+  # Name-match warnings for before/after multi-select
+  # Renders reactively as the user changes selections in either slot
+  output$ie_namematch_warn_before <- renderUI({
+    baci_namematch_warning()
+  })
+  output$ie_namematch_warn_after <- renderUI({
+    baci_namematch_warning()
+  })
+  
+  baci_namematch_warning <- reactive({
+    before_sel <- input[["ie_attr_before"]]
+    after_sel  <- input[["ie_attr_after"]]
+    if (is.null(before_sel) || is.null(after_sel)) return(NULL)
+    if (length(before_sel) <= 1 && length(after_sel) <= 1) return(NULL)
+    if (length(before_sel) != length(after_sel)) {
+      return(p(style = "color:#c0392b; font-size:12px; margin:4px 0 0 0;",
+               paste0("! Number of selected attributes differs: ",
+                      length(before_sel), " before vs ",
+                      length(after_sel), " after.")))
+    }
+    # Check name match: strip _before/_after suffixes and compare
+    strip <- function(x, sfx) sub(paste0("_", sfx, "$"), "", x)
+    b_base <- strip(before_sel, "before")
+    a_base <- strip(after_sel,  "after")
+    if (!identical(sort(b_base), sort(a_base))) {
+      return(p(style = "color:#e67e22; font-size:12px; margin:4px 0 0 0;",
+               "! Attribute names do not match after stripping _before/_after suffixes. ",
+               "Variables will be paired by selection order."))
+    }
+    NULL
+  })
+  
   # Render the method inputs UI (extended to include source slots)
   output$baci_method_inputs_ui <- renderUI({
     method <- input$baci_method
@@ -2680,14 +2737,6 @@ server <- function(input, output, session) {
                        "Pooled units of analysis"                     = "pooled"
                      ),
                      selected = "individual"
-        ),
-        
-        # Output filename (optional)
-        div(style = "margin-top:8px;",
-            textInput("baci_output_filename",
-                      label       = "Output filename (optional, without extension)",
-                      placeholder = "e.g. C:/Data/impact_results",
-                      width       = "100%")
         ),
         
         # Run button
@@ -2752,7 +2801,29 @@ server <- function(input, output, session) {
       if (src_type == "from_vector") {
         attr_sel <- input[[paste0("ie_attr_", slot_id)]]
         if (is.null(attr_sel) || length(attr_sel) == 0) return(NULL)
-        return(list(source_type = "from_vector", attrs = attr_sel))
+        
+        # For before/after with multiple attrs, compute canonical base names.
+        # If names don't match by suffix stripping, pair by selection order
+        # and rename the "after" attrs to match "before" base names.
+        rename_map <- NULL
+        if (slot_id == "after" && length(attr_sel) > 1) {
+          before_sel <- input[["ie_attr_before"]]
+          if (!is.null(before_sel) && length(before_sel) == length(attr_sel)) {
+            strip <- function(x, sfx) sub(paste0("_", sfx, "$"), "", x)
+            b_base <- strip(before_sel, "before")
+            a_base <- strip(attr_sel,   "after")
+            if (!identical(sort(b_base), sort(a_base))) {
+              # Names don't match: pair by order, rename after -> before base names
+              rename_map <- setNames(b_base, attr_sel)
+            }
+          }
+        }
+        
+        return(list(
+          source_type = "from_vector",
+          attrs       = attr_sel,
+          rename_map  = rename_map   # NULL if no rename needed
+        ))
       }
       
       # File-based source: get from ie_source_list
@@ -2883,16 +2954,7 @@ server <- function(input, output, session) {
                length(res$effect_cols), " effect variable(s)."))
     } else { NULL }
     
-    # Optional save button
-    save_ui <- if (!is.null(res$result_vect)) {
-      div(style = "margin-top:8px;",
-          actionButton("baci_save_btn", "Save results (.gpkg)",
-                       class = "btn btn-sm btn-outline-success"),
-          uiOutput("baci_save_status_ui")
-      )
-    } else { NULL }
-    
-    tagList(ok_msg, do.call(tagList, err_items), save_ui)
+    tagList(ok_msg, do.call(tagList, err_items))
   })
   
   observeEvent(input$baci_save_btn, {
@@ -2921,80 +2983,140 @@ server <- function(input, output, session) {
   # =========================================================================
   
   # sf reactive for the impact results
-  baci_result_sf <- reactive({
+  # reactiveVal: sf of impact results, set once when impact_result() changes.
+  # Using reactiveVal instead of reactive() means nothing re-computes this
+  # when other inputs (baci_map_var etc.) change - breaking the reset chain.
+  baci_result_sf_val <- reactiveVal(NULL)
+  
+  observeEvent(impact_result(), {
     res <- impact_result()
-    req(!is.null(res) && !is.null(res$result_vect))
-    sf_obj <- sf::st_as_sf(res$result_vect)
+    if (is.null(res) || is.null(res$result_vect)) {
+      baci_result_sf_val(NULL)
+      return()
+    }
+    sf_obj  <- to_leaflet_sf(res$result_vect)
     uid_col <- isolate(input$baci_col_uid)
     if (!is.null(uid_col) && nchar(uid_col) > 0 && uid_col %in% names(sf_obj)) {
       sf_obj$.feature_id <- as.character(sf_obj[[uid_col]])
     } else {
       sf_obj$.feature_id <- as.character(seq_len(nrow(sf_obj)))
     }
-    sf_obj
+    baci_result_sf_val(sf_obj)
+  }, ignoreNULL = FALSE, ignoreInit = TRUE)
+  
+  # Output flag for conditionalPanel in ui.R
+  output$baci_results_ready <- reactive({
+    res <- impact_result()
+    !is.null(res) && (!is.null(res$result_vect) || !is.null(res$result_df))
+  })
+  outputOptions(output, "baci_results_ready", suspendWhenHidden = FALSE)
+  
+  # Summary text: uses only impact_result(), not baci_result_sf_val()
+  # to avoid shared reactive dependencies that could cause cascading invalidation
+  output$baci_results_summary_ui <- renderUI({
+    res <- impact_result()
+    if (is.null(res) || is.null(res$result_vect)) return(NULL)
+    n_impact    <- nrow(res$result_vect)
+    effect_cols <- res$effect_cols
+    p(style = "font-size:12px; color:#888; margin-bottom:8px;",
+      paste0(n_impact, " impact unit(s), ",
+             length(effect_cols), " effect variable(s). ",
+             "Click a unit to see its BACI results."))
   })
   
-  output$baci_results_card_ui <- renderUI({
+  # Populate selector when results arrive (updateSelectInput never re-renders DOM)
+  observeEvent(impact_result(), {
     res <- impact_result()
-    if (is.null(res)) return(NULL)
-    
-    # Pooled result: show as simple table
-    if (!is.null(res$result_df) && is.null(res$result_vect)) {
-      return(div(class = "card",
-                 div(class = "card-title",
-                     span(class = "icon", "\U0001f4ca"), "Impact assessment results (pooled)"
-                 ),
-                 div(style = "overflow-x:auto;",
-                     tableOutput("baci_pooled_table")
-                 )
-      ))
-    }
-    
-    if (is.null(res$result_vect)) return(NULL)
-    
-    # Individual result: interactive map
-    sf_obj     <- baci_result_sf()
-    n_impact   <- nrow(sf_obj)
-    effect_cols <- res$effect_cols
-    
+    if (is.null(res) || is.null(res$result_vect)) return()
+    sf_obj          <- baci_result_sf_val()
+    effect_cols     <- res$effect_cols
+    contrast_choices <- paste0(effect_cols, "_contrast")
+    contrast_choices <- contrast_choices[contrast_choices %in% names(sf_obj)]
+    updateSelectInput(session, "baci_map_var",
+                      choices  = setNames(contrast_choices, contrast_choices),
+                      selected = contrast_choices[1])
+  }, ignoreNULL = TRUE, ignoreInit = TRUE)
+  
+  # Pooled results card
+  output$baci_pooled_card_ui <- renderUI({
+    res <- impact_result()
+    if (is.null(res) || !is.null(res$result_vect)) return(NULL)
+    if (is.null(res$result_df)) return(NULL)
     div(class = "card",
         div(class = "card-title",
-            span(class = "icon", "\U0001f5fa"),
-            "Impact assessment results"
-        ),
-        p(style = "font-size:12px; color:#888; margin-bottom:8px;",
-          paste0(n_impact, " impact unit(s), ",
-                 length(effect_cols), " effect variable(s). ",
-                 "Click a unit to see its BACI results.")),
-        leafletOutput("baci_result_map", height = "460px"),
-        uiOutput("baci_result_detail_ui")
+            span(class = "icon", "\U0001f4ca"),
+            "Impact assessment results (pooled)"),
+        div(style = "overflow-x:auto;", tableOutput("baci_pooled_table"))
     )
   })
   
-  # Pooled table
   output$baci_pooled_table <- renderTable({
     res <- impact_result()
-    req(!is.null(res$result_df))
+    req(!is.null(res) && !is.null(res$result_df))
     as.data.frame(res$result_df)
   }, striped = TRUE, hover = TRUE, bordered = TRUE, digits = 4)
   
-  # Results map: colour by first contrast column
-  output$baci_result_map <- renderLeaflet({
-    sf_obj      <- baci_result_sf()
-    res         <- impact_result()
-    effect_cols <- res$effect_cols
-    contrast_col <- paste0(effect_cols[1], "_contrast")
+  # Helper: compute fill colours and opacity for the results map.
+  # Reads impact_result() directly (not via baci_result_sf_val()) to avoid
+  # shared reactive chains that cause spurious invalidation of the selector.
+  baci_map_colours <- reactive({
+    res    <- impact_result()
+    req(!is.null(res) && !is.null(res$result_vect))
+    df     <- as.data.frame(res$result_vect)
+    contrast_col <- if (!is.null(input$baci_map_var) && nchar(input$baci_map_var) > 0) {
+      input$baci_map_var
+    } else {
+      paste0(res$effect_cols[1], "_contrast")
+    }
+    if (!contrast_col %in% names(df)) return(NULL)
     
-    geom_t <- unique(sf::st_geometry_type(sf_obj))
-    is_pt  <- any(geom_t %in% c("POINT","MULTIPOINT"))
-    df     <- sf::st_drop_geometry(sf_obj)
-    
-    # Colour scale based on contrast values
     vals <- df[[contrast_col]]
     rng  <- range(vals, na.rm = TRUE)
-    pal  <- leaflet::colorNumeric(
+    # Symmetric range for diverging palette
+    abs_max <- max(abs(rng), na.rm = TRUE)
+    pal <- leaflet::colorNumeric(
       palette = c("#2980b9","white","#c0392b"),
-      domain  = rng, na.color = "#aaaaaa")
+      domain  = c(-abs_max, abs_max), na.color = "#aaaaaa")
+    cols <- pal(vals)
+    
+    # Significance greying: find matching p-value column
+    grey_nonsig <- isTRUE(input$baci_grey_nonsig)
+    pval_col    <- sub("_contrast$", "_pvalue", contrast_col)
+    fill_op <- if (grey_nonsig && pval_col %in% names(df)) {
+      pvals <- df[[pval_col]]
+      ifelse(is.na(pvals) | pvals > 0.05, 0.12, 0.85)
+    } else {
+      rep(0.85, nrow(df))
+    }
+    
+    list(cols = cols, fill_op = fill_op, pal = pal,
+         vals = vals, contrast_col = contrast_col)
+  })
+  
+  # Results map: initial render.
+  # Uses isolate() for colours so re-renders ONLY when impact_result() changes
+  # (i.e. a new analysis is run). Variable/significance changes and click
+  # highlighting are handled exclusively via leafletProxy in the observe() below.
+  output$baci_result_map <- renderLeaflet({
+    sf_obj <- baci_result_sf_val()
+    req(!is.null(sf_obj) && nrow(sf_obj) > 0)
+    # Initial render uses first contrast variable only.
+    # Subsequent variable/significance changes go through observe+leafletProxy.
+    res          <- isolate(impact_result())
+    ec           <- res$effect_cols[1]
+    contrast_col <- paste0(ec, "_contrast")
+    df           <- sf::st_drop_geometry(sf_obj)
+    vals         <- if (contrast_col %in% names(df)) df[[contrast_col]] else rep(0, nrow(df))
+    abs_max      <- max(abs(range(vals, na.rm = TRUE)), na.rm = TRUE)
+    if (abs_max == 0) { abs_max <- 1 }
+    pal <- leaflet::colorNumeric(
+      palette = c("#2980b9","white","#c0392b"),
+      domain  = c(-abs_max, abs_max), na.color = "#aaaaaa")
+    cm <- list(cols = pal(vals), fill_op = rep(0.8, nrow(df)),
+               pal = pal, vals = vals, contrast_col = contrast_col)
+    req(!is.null(cm))
+    geom_t <- unique(sf::st_geometry_type(sf_obj))
+    is_pt  <- any(geom_t %in% c("POINT","MULTIPOINT"))
     
     m <- leaflet::leaflet(sf_obj) |>
       leaflet::addProviderTiles(leaflet::providers$CartoDB.Positron,
@@ -3003,20 +3125,21 @@ server <- function(input, output, session) {
     if (is_pt) {
       m <- m |> leaflet::addCircleMarkers(
         layerId = ~.feature_id,
-        fillColor = pal(vals), color = "white",
-        fillOpacity = 0.85, opacity = 1,
+        fillColor = cm$cols, color = "white",
+        fillOpacity = cm$fill_op, opacity = 1,
         radius = 7, weight = 1.5)
     } else {
       m <- m |> leaflet::addPolygons(
         layerId = ~.feature_id,
-        fillColor = pal(vals), fillOpacity = 0.75,
+        fillColor = cm$cols, fillOpacity = cm$fill_op,
         color = "white", weight = 1, smoothFactor = 0.5,
         options = leaflet::pathOptions(clickable = TRUE))
     }
     m |> leaflet::addLegend(
+      layerId  = "baci_legend",
       position = "bottomright",
-      pal      = pal, values = vals,
-      title    = contrast_col, opacity = 0.8)
+      pal      = cm$pal, values = cm$vals,
+      title    = cm$contrast_col, opacity = 0.8)
   })
   
   # Click: select impact unit
@@ -3033,50 +3156,71 @@ server <- function(input, output, session) {
     }
   }, ignoreInit = TRUE)
   
-  # Highlight selected unit
+  # Update map colours, legend, and selection highlight via leafletProxy.
+  # Fires when: variable selector changes, significance checkbox changes,
+  # or a unit is clicked/deselected.
   observe({
     sel    <- baci_selected_id()
-    sf_obj <- baci_result_sf()
+    sf_obj <- baci_result_sf_val()
     res    <- impact_result()
-    if (is.null(res) || is.null(res$result_vect)) return()
-    df          <- sf::st_drop_geometry(sf_obj)
-    geom_t      <- unique(sf::st_geometry_type(sf_obj))
-    is_pt       <- any(geom_t %in% c("POINT","MULTIPOINT"))
-    effect_cols <- res$effect_cols
-    contrast_col <- paste0(effect_cols[1], "_contrast")
-    vals <- df[[contrast_col]]
-    pal  <- leaflet::colorNumeric(
-      palette = c("#2980b9","white","#c0392b"),
-      domain  = range(vals, na.rm = TRUE), na.color = "#aaaaaa")
+    if (is.null(res) || is.null(res$result_vect) || is.null(sf_obj)) return()
+    cm     <- baci_map_colours()
+    if (is.null(cm)) return()
+    df     <- sf::st_drop_geometry(sf_obj)
+    geom_t <- unique(sf::st_geometry_type(sf_obj))
+    is_pt  <- any(geom_t %in% c("POINT","MULTIPOINT"))
     
-    is_sel   <- if (!is.null(sel)) df$.feature_id == sel else rep(FALSE, nrow(df))
-    fill_op  <- ifelse(is_sel, 1, if (!is.null(sel)) 0.25 else 0.75)
+    has_sel  <- !is.null(sel) && any(df$.feature_id == sel)
+    is_sel   <- if (has_sel) { df$.feature_id == sel } else { rep(FALSE, nrow(df)) }
+    
+    # Combine significance greying with selection dimming:
+    # selected unit -> full opacity, others -> dimmed if something selected
+    base_op  <- cm$fill_op   # already accounts for significance greying
+    fill_op  <- if (has_sel) {
+      ifelse(is_sel, 1, pmin(base_op, 0.2))
+    } else {
+      base_op
+    }
     stroke_c <- ifelse(is_sel, "black", "white")
     stroke_w <- ifelse(is_sel, 3, 1)
     
     proxy <- leaflet::leafletProxy("baci_result_map", data = sf_obj)
+    
+    # Update shapes
     if (is_pt) {
       proxy |> leaflet::clearMarkers() |>
         leaflet::addCircleMarkers(
           layerId = ~.feature_id,
-          fillColor = pal(vals), color = stroke_c,
-          fillOpacity = fill_op, radius = ifelse(is_sel, 10, 7),
+          fillColor = cm$cols, color = stroke_c,
+          fillOpacity = fill_op,
+          radius = ifelse(is_sel, 10, 7),
           weight = stroke_w, stroke = TRUE)
     } else {
       proxy |> leaflet::clearShapes() |>
         leaflet::addPolygons(
           layerId = ~.feature_id,
-          fillColor = pal(vals), fillOpacity = fill_op,
+          fillColor = cm$cols, fillOpacity = fill_op,
           color = stroke_c, weight = stroke_w, smoothFactor = 0.5,
           options = leaflet::pathOptions(clickable = TRUE))
     }
+    
+    # Update legend: remove old and add new with current variable and palette
+    proxy |>
+      leaflet::removeControl("baci_legend") |>
+      leaflet::addLegend(
+        layerId  = "baci_legend",
+        position = "bottomright",
+        pal      = cm$pal,
+        values   = cm$vals,
+        title    = cm$contrast_col,
+        opacity  = 0.8)
   })
   
   # Detail panel for selected unit
   output$baci_result_detail_ui <- renderUI({
     sel <- baci_selected_id()
     if (is.null(sel)) return(NULL)
-    sf_obj      <- baci_result_sf()
+    sf_obj      <- baci_result_sf_val()
     res         <- impact_result()
     df          <- sf::st_drop_geometry(sf_obj)
     row         <- df[df$.feature_id == sel, , drop = FALSE]
@@ -3112,10 +3256,38 @@ server <- function(input, output, session) {
     )
   })
   
+  # Save card: appears below results (mirrors matching analysis save card)
+  output$baci_save_card_ui <- renderUI({
+    res <- impact_result()
+    if (is.null(res) || is.null(res$result_vect)) return(NULL)
+    div(class = "card",
+        div(class = "card-title",
+            span(class = "icon", "\U0001f4be"),
+            "Save results"
+        ),
+        p(style = "font-size:13px; color:#666; margin-bottom:16px;",
+          "Save the impact assessment results (impact units with BACI contrast
+         and p-values) to a GeoPackage file."),
+        div(style = "display:flex; align-items:flex-end; gap:10px;",
+            div(style = "flex:1;",
+                textInput("baci_output_filename",
+                          label       = "Output file path (without extension)",
+                          placeholder = "e.g. C:/Data/impact_results",
+                          width       = "100%")
+            ),
+            div(style = "margin-bottom:15px;",
+                actionButton("baci_save_btn", "Save .gpkg",
+                             class = "btn btn-success btn-sm")
+            )
+        ),
+        uiOutput("baci_save_status_ui")
+    )
+  })
+  
   output$baci_unit_detail_table <- renderTable({
     sel <- baci_selected_id()
     req(!is.null(sel))
-    sf_obj      <- baci_result_sf()
+    sf_obj      <- baci_result_sf_val()
     res         <- impact_result()
     df          <- sf::st_drop_geometry(sf_obj)
     row         <- df[df$.feature_id == sel, , drop = FALSE]
