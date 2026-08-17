@@ -1,0 +1,9 @@
+services:
+  baci-app:
+    build:
+      context: ./PEOPLE-ECCO-BACI
+    ports:
+      - "3838:3838"
+    volumes:
+      - ./PEOPLE-ECCO-BACI:/srv/shiny-server/PEOPLE-ECCO-BACI
+    restart: unless-stopped
