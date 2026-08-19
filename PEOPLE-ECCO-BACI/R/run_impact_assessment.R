@@ -165,40 +165,37 @@ check_variable_consistency <- function(before_cols, after_cols) {
 }
 
 
-# -----------------------------------------------------------------------------
-# compute_baci()
-#
-# Core BACI contrast and p-value computation using data.table grouped
-# operations for efficiency.
-#
-# For the individual case, units are grouped by their MatchIt subclass
-# (column ".subclass" in the matched data). This avoids string-splitting
-# .match_ids and secondary row lookups: each subclass already contains
-# exactly the impact unit and its matched controls.
-# Fallback to .match_ids grouping when .subclass is absent (e.g. some
-# genetic matching configurations).
-#
-# Arguments:
-#   dt             data.table. One row per matched unit, containing at minimum:
-#                    col_uid       unique feature ID
-#                    col_treatment 0/1 treatment indicator (1 = impact)
-#                    ".subclass"   MatchIt subclass (preferred grouping key)
-#                    col_match_ids comma-separated IDs of matched partners
-#                                  (fallback grouping key)
-#                    effect_cols   numeric columns to assess
-#   col_uid        Character. Unique ID column.
-#   col_treatment  Character. Treatment column (0 = control, 1 = impact).
-#   col_match_ids  Character. Fallback column with matched partner IDs.
-#   effect_cols    Character vector. Names of effect columns to assess.
-#   spatial_unit   "individual" or "pooled".
-#
-# Returns a data.table:
-#   individual: one row per impact unit with the uid column plus
-#               <effect_col>_contrast and <effect_col>_pvalue columns.
-#   pooled:     one row with <effect_col>_contrast and <effect_col>_pvalue.
-# -----------------------------------------------------------------------------
-compute_baci <- function(dt, col_uid, col_treatment, col_match_ids,
-                         effect_cols, spatial_unit = "individual") {
+#' -----------------------------------------------------------------------------
+#' compute_contrast()
+#'
+#' Core (BA)CI contrast and p-value computation using data.table grouped
+#' operations for efficiency.
+#'
+#' Arguments:
+#'   dt             data.table. One row per matched unit, containing at minimum
+#'                    col_uid:       unique feature ID (if spatial_unit="individual")
+#'                    col_treatment: treatment indicator (see treat_value)
+#'                    effect_cols:   numeric columns to assess
+#'                  and (if spatial_unit="individual") either
+#'                    col_subclass:  MatchIt subclass
+#'                  or
+#'                    col_match_ids: comma-separated IDs of matched partners
+#'                    
+#'   col_uid        Character. Unique ID column.
+#'   col_treatment  Character. Treatment column.
+#'   col_match_ids  Character. Column with (comma-separated) matched partner IDs.
+#'   col_subclass   Character. Column indicating subclass
+#'   effect_cols    Character vector. Names of effect columns to assess.
+#'   spatial_unit   "individual" or "pooled".
+#'   treat_value    Numeric or character. Treatment value
+#'
+#' Returns a data.table:
+#'   individual: one row per impact unit with the uid column plus
+#'               <effect_col>_contrast and <effect_col>_pvalue columns.
+#'   pooled:     one row with <effect_col>_contrast and <effect_col>_pvalue.
+#' -----------------------------------------------------------------------------
+compute_contrast <- function(dt, col_uid, col_treatment, col_match_ids, col_subclass,
+                             effect_cols, spatial_unit = "individual", treat_value = 1) {
   
   if (!requireNamespace("data.table", quietly = TRUE)) {
     stop("Package 'data.table' is required.")
@@ -211,8 +208,8 @@ compute_baci <- function(dt, col_uid, col_treatment, col_match_ids,
   # Two-sample t-test comparing all impact vs all control values per variable.
   if (spatial_unit == "pooled") {
     results <- lapply(effect_cols, function(ec) {
-      imp_vals  <- dt[get(col_treatment) == 1, get(ec)]
-      ctrl_vals <- dt[get(col_treatment) == 0, get(ec)]
+      imp_vals  <- dt[get(col_treatment) %in%  treat_value, get(ec)]
+      ctrl_vals <- dt[!(get(col_treatment) %in% treat_value), get(ec)]
       imp_vals  <- imp_vals[is.finite(imp_vals)]
       ctrl_vals <- ctrl_vals[is.finite(ctrl_vals)]
       contrast  <- mean(ctrl_vals, na.rm = TRUE) - mean(imp_vals, na.rm = TRUE)
@@ -229,42 +226,40 @@ compute_baci <- function(dt, col_uid, col_treatment, col_match_ids,
     return(out)
   }
   
-  # -- Individual ---------------------------------------------------------------
-  # The SpatVector stores impact-control linkage in .match_ids (comma-separated
-  # UIDs) rather than MatchIt subclass rows, to avoid duplicate control rows in
-  # the output geometry. Here we reconstruct a long-format data.table (one row
-  # per impact-control pair, with a synthetic .grp column) purely for the
-  # grouped t-test computation. The SpatVector format is unchanged.
-  
-  # Step 1: expand .match_ids into explicit pairs
-  impact_dt  <- dt[get(col_treatment) == 1]
-  control_dt <- dt[get(col_treatment) == 0]
-  
-  pair_list <- lapply(seq_len(nrow(impact_dt)), function(i) {
-    imp_uid      <- as.character(impact_dt[[col_uid]][i])
-    match_str    <- as.character(impact_dt[[col_match_ids]][i])
-    partner_uids <- trimws(unlist(strsplit(match_str, ",")))
-    partner_uids <- partner_uids[nchar(partner_uids) > 0]
-    ctrl_rows    <- control_dt[as.character(get(col_uid)) %in% partner_uids]
-    imp_row      <- impact_dt[i]
-    if (nrow(ctrl_rows) == 0) return(NULL)
-    imp_row[,   .grp := imp_uid]
-    ctrl_rows[, .grp := imp_uid]
-    data.table::rbindlist(list(imp_row, ctrl_rows), fill = TRUE)
-  })
-  pair_dt <- data.table::rbindlist(Filter(Negate(is.null), pair_list),
-                                   fill = TRUE)
-  
-  if (nrow(pair_dt) == 0) {
-    stop("Could not reconstruct pairs from .match_ids. ",
-         "Check that the matched vector contains a valid .match_ids column.")
+  # -- Individual --------------------------------------------------------------
+  # Step 1: expand match IDs into explicit pairs, if col_subclass is missing
+  if(missing(col_subclass)){
+    # Impact-control linkages are stored as comma-separated UIDs in col_match_ids.
+    # Here we (re)construct a long-format data.table (one row per impact-control pair,
+    # with a synthetic .grp column).
+    
+    impact_dt  <- dt[get(col_treatment) %in% treat_value]
+    control_dt <- dt[!(get(col_treatment) %in% treat_value)]
+    
+    pair_list <- lapply(seq_len(nrow(impact_dt)), function(i) {
+      imp_uid      <- as.character(impact_dt[[col_uid]][i])
+      match_str    <- as.character(impact_dt[[col_match_ids]][i])
+      partner_uids <- trimws(unlist(strsplit(match_str, ",")))
+      partner_uids <- partner_uids[nchar(partner_uids) > 0]
+      ctrl_rows    <- control_dt[as.character(get(col_uid)) %in% partner_uids]
+      imp_row      <- impact_dt[i]
+      if (nrow(ctrl_rows) == 0) return(NULL)
+      imp_row[,   .grp := imp_uid]
+      ctrl_rows[, .grp := imp_uid]
+      data.table::rbindlist(list(imp_row, ctrl_rows), fill = TRUE)
+    })
+    pair_dt <- data.table::rbindlist(Filter(Negate(is.null), pair_list),
+                                     fill = TRUE)
+    if (nrow(pair_dt) == 0) {
+      stop("Could not reconstruct pairs from col_match_ids",
+           "Check that input contains a valid match IDs column.")
+    }
+  } else {
+    pair_dt <- dt
+    setnames(pair_dt, col_subclass, ".grp")
   }
   
   # Step 2: grouped computation using data.table by=.grp
-  # We avoid .SDcols referencing ec by name to prevent data.table from
-  # including ec as a pass-through column alongside our list() results,
-  # which would create duplicate column names that break setnames().
-  # Instead, capture the column indices outside the by= call.
   treat_col_idx <- which(names(pair_dt) == col_treatment)
   
   all_results <- lapply(effect_cols, function(ec) {
@@ -274,8 +269,8 @@ compute_baci <- function(dt, col_uid, col_treatment, col_match_ids,
       {
         treat_vec <- .SD[[1]]
         ec_vec    <- .SD[[2]]
-        ctrl_val  <- ec_vec[is.finite(ec_vec) & treat_vec == 0]
-        imp_val   <- ec_vec[is.finite(ec_vec) & treat_vec == 1]
+        ctrl_val  <- ec_vec[is.finite(ec_vec) & treat_vec %in% treat_value]
+        imp_val   <- ec_vec[is.finite(ec_vec) & !(treat_vec %in% treat_value)]
         contrast  <- mean(ctrl_val, na.rm = TRUE) - mean(imp_val, na.rm = TRUE)
         pval <- if (length(ctrl_val) == 0 || length(imp_val) == 0) {
           NA_real_
@@ -302,7 +297,7 @@ compute_baci <- function(dt, col_uid, col_treatment, col_match_ids,
   out <- Reduce(function(a, b) merge(a, b, by = ".grp", all = TRUE),
                 all_results)
   data.table::setnames(out, ".grp", col_uid)
-  out
+  return(out)
 }
 
 

@@ -423,6 +423,7 @@ extract_local_vector <- function(x,
 run_extraction <- function(y,
                            base_attrs   = NULL,
                            sources      = list(),
+                           col_uid      = NULL,
                            progress_fun = NULL) {
   
   n_steps <- 1 + length(sources)
@@ -498,9 +499,41 @@ run_extraction <- function(y,
           na.rm        = na_rm
         )
         
+      } else if (identical(src$type, "openeo")) {
+        con <- tryCatch(
+          openeo_connect(
+            if (!is.null(src$backend_url)) { src$backend_url } else {
+              "https://openeo.dataspace.copernicus.eu"
+            }
+          ),
+          error = function(e) {
+            errors <<- c(errors, paste0("[", src_label, "] Auth: ",
+                                        conditionMessage(e)))
+            NULL
+          }
+        )
+        if (is.null(con)) {
+          NULL
+        } else {
+          tryCatch(
+            extract_openeo(
+              y               = y,
+              collection      = src$collection,
+              bands           = src$bands,
+              spatial_reducer = if (!is.null(src$reducer)) { src$reducer } else { "mean" },
+              col_uid         = col_uid,
+              layer_prefix    = src$layer_prefix,
+              con             = con
+            ),
+            error = function(e) {
+              errors <<- c(errors, paste0("[", src_label, "] ",
+                                          conditionMessage(e)))
+              NULL
+            }
+          )
+        }
       } else {
-        warning("Source ", i, " has unknown type '", src$type,
-                "' - skipping.")
+        warning("Source ", i, " has unknown type '", src$type, "'. Skipping.")
         NULL
       }
       

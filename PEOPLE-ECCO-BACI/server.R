@@ -98,23 +98,11 @@ server <- function(input, output, session) {
   output$select_ci_card_ui <- renderUI({
     v <- vect_data()
     if (is.null(v)) return(NULL)
-    info <- geom_info()
-    if (length(info$types) > 1) return(NULL)
     attr_names <- names(v)
-    if (length(attr_names) == 0) {
-      return(div(class = "card",
-                 div(class = "card-title", span(class = "icon", "\U0001f6ab"), "Treatment attribute"),
-                 p(style = "color:#e67e22; font-size:13px;",
-                   "\u26a0 No attributes found.")
-      ))
-    }
-    div(class = "card",
-        div(class = "card-title", span(class = "icon", "\U0001f6ab"), "Treatment attribute"),
-        p(style = "font-size:13px; color:#666; margin-bottom:16px;",
-          "Select the attribute that identifies the treatment (impact/control)."),
-        selectInput("ci_field", label = "Treatment attribute",
-                    choices = setNames(attr_names, attr_names), selected = NULL, width = "360px")
-    )
+    if (length(attr_names) == 0) return(NULL)
+    selectInput("ci_field", label = "Treatment attribute",
+                choices  = setNames(attr_names, attr_names),
+                selected = attr_names[1], width = "100%")
   })
   
   # -- Vector: unique ID card ---------------------------------------------------
@@ -122,28 +110,21 @@ server <- function(input, output, session) {
   output$attr_card_ui <- renderUI({
     v <- vect_data()
     if (is.null(v)) return(NULL)
-    info <- geom_info()
-    if (length(info$types) > 1) return(NULL)
     attr_names <- names(v)
-    if (length(attr_names) == 0) {
-      return(div(class = "card",
-                 div(class = "card-title", span(class = "icon", "\U0001f511"), "Unique Feature ID"),
-                 p(style = "color:#e67e22; font-size:13px;", "\u26a0 No attributes found.")
-      ))
-    }
-    div(class = "card",
-        div(class = "card-title", span(class = "icon", "\U0001f511"), "Unique Feature ID"),
-        div(style = "display:flex; align-items:center; gap:10px; margin-bottom:16px;",
-            checkboxInput(inputId = "use_uid", label = NULL, value = FALSE),
-            p(style = "font-size:13px; color:#666; margin:0;",
-              "Select the attribute that contains the unique identifier for each feature.")
-        ),
-        conditionalPanel(
-          condition = "input.use_uid == true",
-          selectInput("uid_field", label = "Unique ID attribute",
-                      choices = setNames(attr_names, attr_names), selected = NULL, width = "360px"),
-          uiOutput("uid_preview_ui")
-        )
+    if (length(attr_names) == 0) return(NULL)
+    tagList(
+      div(style = "display:flex; align-items:center; gap:10px;",
+          checkboxInput(inputId = "use_uid", label = NULL, value = FALSE),
+          p(style = "font-size:13px; color:#666; margin:0;",
+            "Use a unique feature ID attribute")
+      ),
+      conditionalPanel(
+        condition = "input.use_uid == true",
+        selectInput("uid_field", label = "Unique ID attribute",
+                    choices  = setNames(attr_names, attr_names),
+                    selected = NULL, width = "100%"),
+        uiOutput("uid_preview_ui")
+      )
     )
   })
   
@@ -183,29 +164,47 @@ server <- function(input, output, session) {
   output$vector_plot_card_ui <- renderUI({
     v <- vect_data()
     if (is.null(v)) return(NULL)
-    info <- geom_info()
-    if (length(info$types) > 1) return(NULL)
+    attr_names <- names(v)
     div(class = "card", style = "height:100%;",
-        div(class = "card-title", span(class = "icon", "\U0001f5fa"), "Vector Preview"),
-        plotOutput("vector_plot", height = "560px")
+        div(class = "card-title",
+            span(class = "icon", "\U0001f5fa"), "Vector Preview"),
+        if (length(attr_names) > 0) {
+          selectInput("vec_plot_attr",
+                      label    = "Attribute to visualise",
+                      choices  = setNames(attr_names, attr_names),
+                      selected = attr_names[1],
+                      width    = "100%")
+        } else { NULL },
+        plotOutput("vector_plot", height = "480px")
     )
   })
   
   output$vector_plot <- renderPlot({
     v <- vect_data()
     req(!is.null(v))
-    use_ci  <- !is.null(input$ci_field)  && nchar(input$ci_field)  > 0 && input$ci_field  %in% names(v)
-    use_uid <- isTRUE(input$use_uid) && !is.null(input$uid_field) && nchar(input$uid_field) > 0 && input$uid_field %in% names(v)
-    if (use_ci) {
-      terra::plot(v, input$ci_field,  main = input$ci_field)
-    } else if (use_uid) {
-      terra::plot(v, input$uid_field, main = input$uid_field)
+    attr <- input$vec_plot_attr
+    if (!is.null(attr) && nchar(attr) > 0 && attr %in% names(v)) {
+      terra::plot(v, attr, main = attr)
     } else if (length(names(v)) > 0) {
-      terra::plot(v, names(v)[1],     main = names(v)[1])
+      terra::plot(v, names(v)[1], main = names(v)[1])
     } else {
       terra::plot(v)
     }
   }, res = 96, bg = "white")
+  
+  output$retain_cols_ui <- renderUI({
+    v <- vect_data()
+    if (is.null(v)) return(NULL)
+    attr_names <- names(v)
+    div(style = "margin-top:8px;",
+        selectInput("retain_cols",
+                    label    = "Attributes to retain in output (default: all)",
+                    choices  = setNames(attr_names, attr_names),
+                    selected = attr_names,
+                    multiple = TRUE,
+                    width    = "100%")
+    )
+  })
   
   # -- Matching covariates: Card 1 (attributes from input vector) -------------
   
@@ -403,6 +402,18 @@ server <- function(input, output, session) {
             span(class = "info-pill", res_lbl),
             crs_pill
         )
+      } else if (r$source_type == "openEO") {
+        div(class = "info-row", style = "margin-left:34px; margin-top:4px;",
+            span(class = "info-pill", "openEO"),
+            span(class = "info-pill", r$collection),
+            span(class = "info-pill", "EPSG:4326")
+        )
+      } else if (r$source_type == "openEO") {
+        div(class = "info-row", style = "margin-left:34px; margin-top:4px;",
+            span(class = "info-pill", "openEO"),
+            span(class = "info-pill", r$collection),
+            span(class = "info-pill", "EPSG:4326")
+        )
       } else {
         div(class = "info-row", style = "margin-left:34px; margin-top:4px;",
             span(class = "info-pill", r$source_type),
@@ -477,11 +488,34 @@ server <- function(input, output, session) {
                       )
                   )
                 )
+              } else if (r$source_type == "openEO") {
+                tagList(
+                  p(style = "font-size:12px; color:#555; margin-bottom:4px;",
+                    paste0("Collection: ", r$collection)),
+                  selectInput(paste0("oe_bands_", i),
+                              label    = "Band(s)",
+                              choices  = r$lyr_choices,
+                              selected = r$sel_lyr,
+                              multiple = TRUE, width = "100%"),
+                  selectInput(paste0("oe_reducer_", i),
+                              label    = "Spatial reducer",
+                              choices  = c("mean","median","min","max","sum","sd"),
+                              selected = r$fun, width = "100%")
+                )
+              } else if (r$source_type == "openEO") {
+                tagList(
+                  p(style = "font-size:12px; color:#555; margin-bottom:4px;",
+                    paste0("Collection: ", r$collection)),
+                  selectInput(paste0("oe_bands_", i),
+                              label    = "Band(s)", choices = r$lyr_choices,
+                              selected = r$sel_lyr, multiple = TRUE, width = "100%"),
+                  selectInput(paste0("oe_reducer_", i),
+                              label    = "Spatial reducer",
+                              choices  = c("mean","median","min","max","sum","sd"),
+                              selected = r$fun, width = "100%")
+                )
               } else {
                 # Local vector controls
-                # Use stored values only - avoids reading input[[]] here
-                # which would cause full re-render on every dropdown change.
-                # Sync observers keep r$vec_fun and r$vec_attrs up to date.
                 needs_attrs     <- r$vec_fun %in% c("mean","median","std","min","max","sum")
                 no_attr_warning <- needs_attrs &&
                   (is.null(r$vec_attrs) || length(r$vec_attrs) == 0)
@@ -536,7 +570,7 @@ server <- function(input, output, session) {
                              next_index),
                            div(style = "min-width:220px;",
                                selectInput(src_type_id, label = "Source type",
-                                           choices  = c("Select..." = "", "Local raster" = "Local raster", "URL raster" = "URL raster", "PEOPLE-ECCO dataset" = "PEOPLE-ECCO dataset", "Local vector" = "Local vector"),
+                                           choices  = c("Select..." = "", "Local raster" = "Local raster", "URL raster" = "URL raster", "PEOPLE-ECCO dataset" = "PEOPLE-ECCO dataset", "Local vector" = "Local vector", "openEO collection" = "openEO"),
                                            selected = src_selected, width = "100%")
                            )
     )
@@ -544,6 +578,7 @@ server <- function(input, output, session) {
     is_local_raster <- (!is.null(src_type_val) && src_type_val == "Local raster")
     is_url_raster   <- (!is.null(src_type_val) && src_type_val == "URL raster")
     is_local_vector <- (!is.null(src_type_val) && src_type_val == "Local vector")
+    is_openeo       <- (!is.null(src_type_val) && src_type_val == "openEO")
     is_peopleecco   <- (!is.null(src_type_val) && src_type_val == "PEOPLE-ECCO dataset")
     path_lbl <- if (is_local_raster) {
       "Path to raster file (.tif)"
@@ -580,12 +615,35 @@ server <- function(input, output, session) {
           ),
           uiOutput(paste0("lyrstatus_", next_index))
       )
+    } else if (isTRUE(is_openeo)) {
+      div(style = "margin-left:34px; margin-top:8px;",
+          div(style = "display:flex; justify-content:flex-end;",
+              actionButton(next_btn_id, "Add collection",
+                           class = "btn btn-primary btn-sm")
+          ),
+          uiOutput(paste0("lyrstatus_", next_index))
+      )
     } else {
       NULL
     }
     
+    # Add openEO collection + reducer selectors when openEO source type selected
+    openeo_pending <- if (isTRUE(is_openeo)) {
+      div(style = "margin-top:8px;",
+          selectInput(paste0("oe_collection_", next_index),
+                      label    = "Collection",
+                      choices  = openeo_collection_choices(),
+                      selected = names(openeo_collection_choices())[1],
+                      width    = "100%"),
+          selectInput(paste0("oe_reducer_", next_index),
+                      label    = "Spatial reducer",
+                      choices  = c("mean","median","min","max","sum","sd"),
+                      selected = "mean", width = "100%")
+      )
+    } else { NULL }
+    
     do.call(tagList, c(confirmed_rows, list(
-      div(style = "margin-top:4px;", source_selector, path_controls)
+      div(style = "margin-top:4px;", source_selector, path_controls, openeo_pending)
     )))
   })
   
@@ -606,6 +664,25 @@ server <- function(input, output, session) {
           validate_peopleecco(path)
         } else if (!is.null(src) && src == "Local vector") {
           validate_local_vector(path)
+        } else if (!is.null(src) && src == "openEO") {
+          coll_sel <- input[[paste0("oe_collection_", slot)]]
+          if (is.null(coll_sel) || nchar(coll_sel) == 0) {
+            list(ok = FALSE, msg = "Please select a collection first.")
+          } else {
+            list(ok = TRUE, msg = "",
+                 source_type = "openEO",
+                 name        = coll_sel,
+                 path        = "",
+                 collection  = coll_sel,
+                 crs         = "EPSG:4326",
+                 nlyr        = 1L, nrow = NA_integer_, ncol = NA_integer_,
+                 res         = c(NA_real_, NA_real_),
+                 lyr_choices = openeo_band_choices(coll_sel),
+                 sel_lyr     = openeo_band_choices(coll_sel),
+                 fun         = "mean", resamp = "bilinear",
+                 na_rm       = "TRUE", use_chunks = FALSE,
+                 chunk_size  = 500L)
+          }
         } else {
           list(ok = FALSE, msg = "Please select a source type first.")
         }
@@ -744,15 +821,14 @@ server <- function(input, output, session) {
   # Extract button
   output$extract_btn_ui <- renderUI({
     v         <- vect_data()
+    if (is.null(v)) return(NULL)
     confirmed <- matchlyr_list()
-    vec_attrs <- if (!is.null(input$col_matchvars)) { length(input$col_matchvars) } else { 0 }
     n_ext     <- length(confirmed)
-    if (is.null(v) || (vec_attrs == 0 && n_ext == 0)) return(NULL)
-    suffix_vec  <- if (vec_attrs > 1) { "s" } else { "" }
-    suffix_ext  <- if (n_ext > 1) { "s" } else { "" }
-    lbl_vec     <- if (vec_attrs > 0) { paste0(vec_attrs, " vector attribute", suffix_vec) } else { NULL }
-    lbl_ext     <- if (n_ext > 0) { paste0(n_ext, " external layer", suffix_ext) } else { NULL }
-    summary_str <- paste(c(lbl_vec, lbl_ext), collapse = " + ")
+    summary_str <- if (n_ext > 0) {
+      paste0("Input vector + ", n_ext, " external source(s)")
+    } else {
+      "Input vector attributes only"
+    }
     div(style = "margin-top:8px; padding:20px 0 8px 0;",
         div(class = "section-divider"),
         div(style = "max-width:520px; margin-bottom:16px;",
@@ -783,15 +859,10 @@ server <- function(input, output, session) {
     }
     
     fname <- trimws(input$output_filename)
-    if (nchar(fname) == 0) {
-      showNotification("Please enter an output filename before extracting.",
-                       type = "warning")
-      return()
-    }
     
-    # -- Build base_attrs: treatment col + optional UID + card-1 attributes ---
-    uid_attr   <- if (isTRUE(input$use_uid)) { input$uid_field } else { NULL }
-    base_attrs <- unique(c(input$ci_field, uid_attr, input$col_matchvars))
+    # -- Build base_attrs from retain_cols (all by default) ------------------
+    retain     <- input$retain_cols
+    base_attrs <- if (!is.null(retain) && length(retain) > 0) { retain } else { names(v) }
     
     # -- Build sources list from matchlyr_list --------------------------------
     # fun_custom, fun_fraction and na_rm are read from live input[[]] here
@@ -801,7 +872,29 @@ server <- function(input, output, session) {
       src     <- ml[[i]]
       na_rm   <- !identical(input[[paste0("na_rm_", i)]], "FALSE")
       
-      if (src$source_type %in% c("Local raster", "URL raster", "PEOPLE-ECCO dataset")) {
+      if (src$source_type == "openEO") {
+        list(
+          type         = "openeo",
+          collection   = src$collection,
+          bands        = input[[paste0("oe_bands_", i)]],
+          reducer      = {
+            rv <- input[[paste0("oe_reducer_", i)]]
+            if (!is.null(rv) && nchar(rv) > 0) { rv } else { "mean" }
+          },
+          layer_prefix = make_colname(src$collection)
+        )
+      } else if (src$source_type == "openEO") {
+        list(
+          type         = "openeo",
+          collection   = src$collection,
+          bands        = input[[paste0("oe_bands_", i)]],
+          reducer      = {
+            rv <- input[[paste0("oe_reducer_", i)]]
+            if (!is.null(rv) && nchar(rv) > 0) { rv } else { "mean" }
+          },
+          layer_prefix = make_colname(src$collection)
+        )
+      } else if (src$source_type %in% c("Local raster", "URL raster", "PEOPLE-ECCO dataset")) {
         list(
           type         = "raster",
           path         = src$path,
@@ -847,6 +940,9 @@ server <- function(input, output, session) {
         y            = v,
         base_attrs   = base_attrs,
         sources      = sources,
+        col_uid      = if (isTRUE(input$use_uid) && nchar(input$uid_field) > 0) {
+          input$uid_field
+        } else { NULL },
         progress_fun = shiny_progress
       ),
       error = function(e) {

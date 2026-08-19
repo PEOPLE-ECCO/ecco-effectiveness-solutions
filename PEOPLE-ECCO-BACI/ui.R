@@ -48,55 +48,52 @@ ui <- fluidPage(
       p("General overview of solution, links to user handbook, etc.")
     ),
     
-    # -- Tab 2: Vector input & Matching covariates ---------------------------
+    # -- Tab 2: Extract matching covariates ----------------------------------
     tabPanel(
-      title = "Vector & Covariates",
+      title = "Extract matching covariates",
       
-      h3("Vector input & Matching covariates"),
+      h3("Extract matching covariates"),
       
-      # -- Section 1: Vector file input + attribute preview ------------------
-      div(class = "card",
-          div(class = "card-title", span(class = "icon", "\U0001f4c2"), "Vector Input"),
-          p(style = "font-size:13px; color:#666; margin-bottom:18px;",
-            "Upload a vector file from disk. Allowed formats: GeoJSON or Shapefile
-           (select all associated files for Shapefile)."),
-          fileInput(
-            inputId     = "geojson_file",
-            label       = "Browse for a vector file",
-            accept      = c(".geojson", ".json", ".shp", ".dbf", ".shx", ".prj", ".cpg", ".qpj"),
-            multiple    = TRUE,
-            buttonLabel = "Browse\u2026",
-            placeholder = "No file selected"
-          ),
-          uiOutput("geom_type_ui")
-      ),
-      
+      # -- Section 1: Units of analysis + vector preview side by side --------
       fluidRow(
         column(5,
-               uiOutput("select_ci_card_ui"),
-               uiOutput("attr_card_ui")
+               div(class = "card",
+                   div(class = "card-title",
+                       span(class = "icon", "\U0001f4c2"),
+                       "Units of analysis"
+                   ),
+                   p(style = "font-size:13px; color:#666; margin-bottom:18px;",
+                     "Upload the vector file containing your units of analysis.
+               Allowed formats: GeoJSON or Shapefile (select all associated
+               files for Shapefile)."),
+                   fileInput(
+                     inputId     = "geojson_file",
+                     label       = "Browse for a vector file",
+                     accept      = c(".geojson",".json",".shp",".dbf",".shx",
+                                     ".prj",".cpg",".qpj"),
+                     multiple    = TRUE,
+                     buttonLabel = "Browse\u2026",
+                     placeholder = "No file selected"
+                   ),
+                   uiOutput("geom_type_ui"),
+                   # These appear once a file is loaded
+                   uiOutput("select_ci_card_ui"),
+                   uiOutput("attr_card_ui"),
+                   uiOutput("retain_cols_ui")
+               )
         ),
         column(7,
                uiOutput("vector_plot_card_ui")
         )
       ),
       
-      # -- Section 2: Matching covariates ------------------------------------
+      # -- Section 2: Additional covariate sources ---------------------------
       div(style = "margin-top:8px;",
-          h4("Matching covariates"),
+          h4("Additional covariate sources"),
           p(style = "font-size:13px; color:#666;",
-            "Select or load the covariate layers to use in matching.")
-      ),
-      
-      div(class = "card",
-          div(class = "card-title",
-              span(class = "icon", "\U0001f4c1"),
-              "From input vector"
-          ),
-          p(style = "font-size:13px; color:#666; margin-bottom:18px;",
-            "Select attributes already present in the input vector file to use
-           as matching covariates."),
-          uiOutput("matchvars_select_ui")
+            "Optionally add covariate layers from external sources to extract
+           and append to the output vector. If no sources are added, the
+           output will contain only the input vector attributes.")
       ),
       
       div(class = "card",
@@ -105,10 +102,8 @@ ui <- fluidPage(
               "From additional sources"
           ),
           p(style = "font-size:13px; color:#666; margin-bottom:20px;",
-            "Add additional covariate layers from external sources. Select the
-           source type first; the relevant options appear below. After each
-           source is confirmed a new entry appears automatically. Files are
-           registered by path only and not loaded into memory at this stage."),
+            "Select the source type; options appear below. Each confirmed
+           source is appended automatically."),
           uiOutput("matchlyr_rows_ui")
       ),
       

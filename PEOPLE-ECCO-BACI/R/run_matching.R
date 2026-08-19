@@ -311,10 +311,12 @@ run_matching <- function(x, col_treatment, col_covars,
   matched_df_clean <- sanitise_for_terra(matched_df)
   
   # -- Attach geometry using UID as the join key ----------------------------
-  # terra::merge() joins a SpatVector with a data.frame on a shared column,
-  # preserving geometry automatically. No WKT extraction needed.
+  # terra::merge() joins a SpatVector with a plain data.frame on a shared
+  # column, preserving geometry automatically. as.data.frame() is required to
+  # strip the "matchdata" subclass from MatchIt's output, which would otherwise
+  # cause dispatch to base::merge.data.frame and lose the geometry.
   if (is_spat) {
-    out <- terra::merge(x[, col_uid], matched_df_clean,
+    out <- terra::merge(x[, col_uid], as.data.frame(matched_df_clean),
                         by = col_uid, all = FALSE)
     if (nrow(out) == 0) {
       stop("UID-based geometry merge produced 0 rows. ",
