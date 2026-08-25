@@ -1,5 +1,10 @@
+# Source tab UI definitions
+source("tabs/tab2_covariates_ui.R")
+source("tabs/tab3_matching_ui.R")
+source("tabs/tab4_impact_ui.R")
+
 ui <- fluidPage(
-  
+
   tags$head(tags$style(HTML("
     body { background-color:#f4f6f9; font-family:'Segoe UI',Arial,sans-serif; color:#2c3e50; }
     .app-header { background:#00AF9E; color:white; padding:0 30px 0 0; margin-bottom:0; border-radius:0; display:flex; align-items:stretch; min-height:64px; }
@@ -28,281 +33,28 @@ ui <- fluidPage(
     .section-divider { height:1px; background:#eef0f3; margin:6px 0 20px 0; }
     .placeholder-msg { color:#aab4be; font-size:13px; font-style:italic; }
   "))),
-  
+
   div(class = "app-header",
-      tags$img(src = "PEOPLE_Ecosystems_Conservation_key visual.jpg",
-               alt = "PEOPLE-ECCO logo"),
-      div(class = "app-header-text",
-          h2("PEOPLE-ECCO BACI"),
-          p("Supported by ESA")
-      )
+    tags$img(src = "PEOPLE_Ecosystems_Conservation_key visual.jpg",
+             alt = "PEOPLE-ECCO logo"),
+    div(class = "app-header-text",
+      h2("PEOPLE-ECCO BACI"),
+      p("Supported by ESA")
+    )
   ),
-  
+
   tabsetPanel(
     id = "main_tabs",
-    
+
     # -- Tab 1: Instructions --------------------------------------------------
     tabPanel(
       title = "Instructions",
-      h3("Instructions"),
-      p("General overview of solution, links to user handbook, etc.")
+      includeMarkdown("instructions.md")
     ),
-    
-    # -- Tab 2: Extract matching covariates ----------------------------------
-    tabPanel(
-      title = "Extract matching covariates",
-      
-      h3("Extract matching covariates"),
-      
-      # -- Section 1: Units of analysis + vector preview side by side --------
-      fluidRow(
-        column(5,
-               div(class = "card",
-                   div(class = "card-title",
-                       span(class = "icon", "\U0001f4c2"),
-                       "Units of analysis"
-                   ),
-                   p(style = "font-size:13px; color:#666; margin-bottom:18px;",
-                     "Upload the vector file containing your units of analysis.
-               Allowed formats: GeoJSON or Shapefile (select all associated
-               files for Shapefile)."),
-                   fileInput(
-                     inputId     = "geojson_file",
-                     label       = "Browse for a vector file",
-                     accept      = c(".geojson",".json",".shp",".dbf",".shx",
-                                     ".prj",".cpg",".qpj"),
-                     multiple    = TRUE,
-                     buttonLabel = "Browse\u2026",
-                     placeholder = "No file selected"
-                   ),
-                   uiOutput("geom_type_ui"),
-                   # These appear once a file is loaded
-                   uiOutput("select_ci_card_ui"),
-                   uiOutput("attr_card_ui"),
-                   uiOutput("retain_cols_ui")
-               )
-        ),
-        column(7,
-               uiOutput("vector_plot_card_ui")
-        )
-      ),
-      
-      # -- Section 2: Additional covariate sources ---------------------------
-      div(style = "margin-top:8px;",
-          h4("Additional covariate sources"),
-          p(style = "font-size:13px; color:#666;",
-            "Optionally add covariate layers from external sources to extract
-           and append to the output vector. If no sources are added, the
-           output will contain only the input vector attributes.")
-      ),
-      
-      div(class = "card",
-          div(class = "card-title",
-              span(class = "icon", "\U0001f4be"),
-              "From additional sources"
-          ),
-          p(style = "font-size:13px; color:#666; margin-bottom:20px;",
-            "Select the source type; options appear below. Each confirmed
-           source is appended automatically."),
-          uiOutput("matchlyr_rows_ui")
-      ),
-      
-      uiOutput("extract_btn_ui")
-    ),
-    
-    
-    # -- Tab 3: Matching analysis --------------------------------------------
-    tabPanel(
-      title = "Matching analysis",
-      
-      h3("Matching analysis"),
-      p("Set up the matching dataset, configure parameters, run matching,
-         and evaluate results."),
-      
-      # -- Section 1: Input & parameters ------------------------------------
-      fluidRow(
-        column(5,
-               div(class = "card",
-                   div(class = "card-title",
-                       span(class = "icon", "\U0001f4c2"),
-                       "Matching dataset"
-                   ),
-                   p(style = "font-size:13px; color:#666; margin-bottom:16px;",
-                     "Provide the SpatVector containing treatment indicator and
-               matching covariates. Use the output from the Vector & Covariates
-               tab, or load an existing file from disk."),
-                   radioButtons("match_input_source",
-                                label    = NULL,
-                                choices  = c(
-                                  "Use output from Vector & Covariates tab" = "from_tab",
-                                  "Load from file"                          = "from_file"
-                                ),
-                                selected = "from_tab"
-                   ),
-                   conditionalPanel(
-                     condition = "input.match_input_source == 'from_file'",
-                     div(style = "margin-top:8px;",
-                         fileInput("match_vect_file",
-                                   label       = "Browse for a vector file",
-                                   accept      = c(".gpkg", ".geojson", ".json", ".shp",
-                                                   ".dbf", ".shx", ".prj", ".cpg"),
-                                   multiple    = TRUE,
-                                   buttonLabel = "Browse\u2026",
-                                   placeholder = "No file selected")
-                     )
-                   ),
-                   uiOutput("match_vect_status_ui"),
-                   div(class = "section-divider"),
-                   uiOutput("match_uid_ui"),
-                   uiOutput("match_treatment_ui"),
-                   uiOutput("match_covars_ui"),
-                   uiOutput("match_multicol_check_ui"),
-                   uiOutput("match_attr_select_ui")
-               ),
-               
-               div(class = "card",
-                   div(class = "card-title",
-                       span(class = "icon", "\u2699"),
-                       "Matching parameters"
-                   ),
-                   p(style = "font-size:13px; color:#666; margin-bottom:16px;",
-                     "Parameters passed to ",
-                     tags$code("MatchIt::matchit()"),
-                     ". Formula and data are generated from the selections above."),
-                   selectInput("mi_method", label = "method",
-                               choices  = c("nearest","optimal","full","quick","genetic",
-                                            "cem","exact","cardinality","subclass"),
-                               selected = "nearest", width = "100%"),
-                   selectInput("mi_estimand", label = "estimand",
-                               choices  = c("ATT","ATC","ATE"),
-                               selected = "ATT", width = "100%"),
-                   uiOutput("mi_distance_ui"),
-                   uiOutput("mi_replace_ratio_ui"),
-                   uiOutput("mi_caliper_ui"),
-                   uiOutput("mi_morder_ui"),
-                   uiOutput("mi_discard_ui"),
-                   uiOutput("mi_exact_ui"),
-                   uiOutput("mi_method_extras_ui"),
-                   uiOutput("mi_sweights_ui"),
-                   uiOutput("mi_mahvars_ui"),
-                   uiOutput("mi_dist_options_ui"),
-                   div(style = "margin-top:20px;",
-                       actionButton("click_matching", "Run matching",
-                                    class = "btn-success btn-lg", width = "100%")
-                   )
-               )
-        ),
-        
-        column(7,
-               uiOutput("match_plot_card_ui"),
-               uiOutput("match_multicol_output_ui")
-        )
-      ),
-      
-      # -- Section 2: Evaluation (appears after matching) -------------------
-      div(style = "margin-top:8px;",
-          h4("Matching evaluation"),
-          p(style = "font-size:13px; color:#666;",
-            "Review matched units, assess balance, and save results.")
-      ),
-      
-      uiOutput("match_eval_dropped_card_ui"),
-      uiOutput("match_eval_map_card_ui"),
-      uiOutput("match_eval_attr_card_ui"),
-      uiOutput("match_eval_diag_card_ui"),
-      uiOutput("match_eval_save_card_ui")
-    ),
-    
-    # -- Tab 6: Impact evaluation ---------------------------------------------
-    tabPanel(
-      title = "Impact evaluation",
-      
-      h3("Impact evaluation"),
-      p("Some info about this tab."),
-      
-      fluidRow(
-        column(5,
-               div(class = "card",
-                   div(class = "card-title",
-                       span(class = "icon", "\U0001f4c2"),
-                       "Matched control-impact pairs"
-                   ),
-                   p(style = "font-size:13px; color:#666; margin-bottom:16px;",
-                     "Provide the SpatVector of matched control-impact pairs. Use
-               the output from the Matching evaluation tab, or load an
-               existing file from disk."),
-                   radioButtons("baci_input_source",
-                                label    = NULL,
-                                choices  = c(
-                                  "Use output from Matching evaluation tab" = "from_matching",
-                                  "Load from file"                          = "from_file"
-                                ),
-                                selected = "from_matching"
-                   ),
-                   conditionalPanel(
-                     condition = "input.baci_input_source == 'from_file'",
-                     div(style = "margin-top:8px;",
-                         fileInput("baci_vect_file",
-                                   label       = "Browse for a vector file",
-                                   accept      = c(".gpkg", ".geojson", ".json", ".shp",
-                                                   ".dbf", ".shx", ".prj", ".cpg"),
-                                   multiple    = TRUE,
-                                   buttonLabel = "Browse\u2026",
-                                   placeholder = "No file selected")
-                     )
-                   ),
-                   uiOutput("baci_vect_status_ui"),
-                   
-                   div(class = "section-divider"),
-                   
-                   # Column role selectors (pre-filled from matching tab when available)
-                   uiOutput("baci_col_selectors_ui")
-               )
-        ),
-        column(7,
-               uiOutput("baci_plot_card_ui")
-        )
-      ),
-      
-      # Card 2: impact assessment method selection
-      uiOutput("baci_method_card_ui"),
-      
-      # Static map controls: always in DOM, populated via updateSelectInput
-      # when results arrive. Must NOT be inside renderUI to stay stable.
-      conditionalPanel(
-        condition = "output.baci_results_ready",
-        div(class = "card",
-            div(class = "card-title",
-                span(class = "icon", "\U0001f5fa"),
-                "Impact assessment results"),
-            uiOutput("baci_results_summary_ui"),
-            fluidRow(
-              column(6,
-                     selectInput("baci_map_var",
-                                 label    = "Variable to visualise",
-                                 choices  = character(0),
-                                 width    = "100%")
-              ),
-              column(6,
-                     div(style = "margin-top:25px;",
-                         checkboxInput("baci_grey_nonsig",
-                                       label = "Grey out non-significant units (p > 0.05)",
-                                       value = FALSE)
-                     )
-              )
-            ),
-            leafletOutput("baci_result_map", height = "460px"),
-            uiOutput("baci_result_detail_ui")
-        ),
-        # Pooled results table (shown instead of map for pooled analysis)
-        uiOutput("baci_pooled_card_ui"),
-        
-        # Save card: below results
-        uiOutput("baci_save_card_ui")
-      )
-    ),
-    
-    
-    
-  )  # end tabsetPanel
-)  # end fluidPage
+
+    tab2_ui,
+    tab3_ui,
+    tab4_ui
+
+  )
+)

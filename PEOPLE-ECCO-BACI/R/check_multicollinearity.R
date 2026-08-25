@@ -145,22 +145,33 @@ check_multicollinearity <- function(x, vars, use = "pairwise.complete.obs") {
 #   cex_axis  Numeric. Font size multiplier for axis labels. Default 0.8.
 #   cex_text  Numeric. Font size multiplier for cell values.  Default 0.75.
 # -----------------------------------------------------------------------------
-plot_cor_matrix <- function(cor_mat, cex_axis = 0.8, cex_text = 0.75) {
+plot_cor_matrix <- function(cor_mat, cex_axis = 0.8, cex_text = 0.75,
+                            max_label_chars = 20) {
 
   n   <- ncol(cor_mat)
   nms <- colnames(cor_mat)
 
-  # image() maps matrix[i,j] to position (x=i, y=j), with y increasing upward.
-  # To display the matrix with row 1 at the top (conventional), reverse rows.
-  # The axis labels and text coordinates must match this reversal consistently.
-  display_mat <- cor_mat[nrow(cor_mat):1, ]   # flip rows, not columns
+  # Truncate long labels for display only — the matrix values are unchanged.
+  # Labels longer than max_label_chars are shortened with a trailing ellipsis.
+  trunc_label <- function(x, maxc) {
+    ifelse(nchar(x) > maxc,
+           paste0(substr(x, 1, maxc - 2), ".."),
+           x)
+  }
+  lbl <- trunc_label(nms, max_label_chars)
 
-  old_par <- par(mar = c(max(nchar(nms)) * 0.6, max(nchar(nms)) * 0.6, 2, 1))
+  # Margin size: based on truncated label length, capped to avoid overflow.
+  max_lbl <- max(nchar(lbl))
+  margin  <- min(max_lbl * cex_axis * 0.55 + 1, 12)   # cap at 12 lines
+
+  display_mat <- cor_mat[nrow(cor_mat):1, ]   # flip rows so row 1 is at top
+
+  old_par <- par(mar = c(margin, margin, 2, 1))
   on.exit(par(old_par))
 
   image(
-    x    = seq_len(n),                 # x axis = columns
-    y    = seq_len(n),                 # y axis = rows (reversed)
+    x    = seq_len(n),
+    y    = seq_len(n),
     z    = display_mat,
     col  = colorRampPalette(c("#c0392b", "white", "#2980b9"))(101),
     zlim = c(-1, 1),
@@ -168,18 +179,14 @@ plot_cor_matrix <- function(cor_mat, cex_axis = 0.8, cex_text = 0.75) {
     xlab = "", ylab = ""
   )
 
-  # x axis: column names (bottom)
-  axis(1, at = seq_len(n), labels = nms,      las = 2, cex.axis = cex_axis)
-  # y axis: row names reversed so row 1 is at top
-  axis(2, at = seq_len(n), labels = rev(nms), las = 1, cex.axis = cex_axis)
+  # x axis: column names (bottom), y axis: row names (left, reversed)
+  axis(1, at = seq_len(n), labels = lbl,       las = 2, cex.axis = cex_axis)
+  axis(2, at = seq_len(n), labels = rev(lbl),  las = 1, cex.axis = cex_axis)
 
-  # Cell labels: iterate over original cor_mat[row, col]
-  # image y=1 corresponds to the LAST row of display_mat = first row of cor_mat
   for (col_idx in seq_len(n)) {
     for (row_idx in seq_len(n)) {
-      val    <- cor_mat[row_idx, col_idx]
-      # In display_mat, original row row_idx maps to y = (n + 1 - row_idx)
-      y_pos  <- n + 1 - row_idx
+      val   <- cor_mat[row_idx, col_idx]
+      y_pos <- n + 1 - row_idx
       text(col_idx, y_pos,
            labels = formatC(round(val, 2), format = "f", digits = 2),
            cex    = cex_text,

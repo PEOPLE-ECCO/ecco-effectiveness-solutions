@@ -34,26 +34,30 @@
 # <layer>_<slot> (e.g. "ndvi_before", "ndvi_after").
 # -----------------------------------------------------------------------------
 extract_impact_variable <- function(matched_vect, source_spec, col_uid) {
-  
+
   slot   <- source_spec$slot
   src_type <- source_spec$source_type
-  
+
   if (src_type %in% c("Local raster", "URL raster", "PEOPLE-ECCO dataset")) {
-    
+
     rast_path <- if (src_type == "URL raster") {
       paste0("/vsicurl/", source_spec$path)
     } else {
       source_spec$path
     }
-    
+
     na_rm <- if (!is.null(source_spec$na.rm)) source_spec$na.rm else TRUE
-    
+
     src_method   <- if (!is.null(source_spec$method)) { source_spec$method } else { "simple" }
     src_chunks   <- isTRUE(source_spec$use_chunks)
     src_chunksize <- if (!is.null(source_spec$chunk_size) && !is.na(source_spec$chunk_size)) {
       as.integer(source_spec$chunk_size)
     } else { 500L }
-    
+
+    # Extract with whatever prefix the filename gives, then strip it so
+    # output columns are named by layer name only (e.g. "average", "trend").
+    # This ensures check_variable_consistency() finds matching bases regardless
+    # of the filename (e.g. "avgtrend_before.tif" vs "avgtrend_after.tif").
     df <- extract_local_raster(
       x            = rast_path,
       y            = matched_vect,
@@ -67,9 +71,29 @@ extract_impact_variable <- function(matched_vect, source_spec, col_uid) {
       chunk_size   = src_chunksize,
       na.rm        = na_rm
     )
-    
+
+    # Rename: strip the filename prefix so columns are named by layer name only.
+    # extract_local_raster names columns <prefix>_<layername>; we want just
+    # <layername> so the slot suffix produces <layername>_<slot>.
+    rast_obj  <- terra::rast(rast_path)
+    all_lyrs  <- names(rast_obj)
+    # Determine which layers were actually extracted (respecting sel_lyr)
+    sel       <- source_spec$sel_lyr
+    if (!is.null(sel) && length(sel) > 0) {
+      idx <- suppressWarnings(as.integer(sel))
+      if (any(is.na(idx))) { idx <- match(sel, all_lyrs) }
+      idx <- idx[!is.na(idx) & idx >= 1 & idx <= length(all_lyrs)]
+      extracted_lyrs <- all_lyrs[idx]
+    } else {
+      extracted_lyrs <- all_lyrs
+    }
+    # Assign clean layer names (same number and order as df columns)
+    if (length(extracted_lyrs) == ncol(df)) {
+      names(df) <- make_colname(extracted_lyrs)
+    }
+
   } else if (src_type == "Local vector") {
-    
+
     vec_fun_val <- if (!is.null(source_spec$vec_fun)) { source_spec$vec_fun } else { "mean" }
     df <- extract_local_vector(
       x            = source_spec$path,
@@ -79,9 +103,9 @@ extract_impact_variable <- function(matched_vect, source_spec, col_uid) {
       layer_prefix = source_spec$layer_prefix,
       na.rm        = TRUE
     )
-    
+
   } else if (src_type == "from_vector") {
-    
+
     # Values already in the matched_vect attributes
     attrs <- source_spec$attrs   # character vector of column names
     df_v  <- as.data.frame(matched_vect)
@@ -91,7 +115,7 @@ extract_impact_variable <- function(matched_vect, source_spec, col_uid) {
            paste(missing_a, collapse = ", "))
     }
     df <- df_v[, attrs, drop = FALSE]
-    
+
     # Apply rename_map if provided (after attrs paired by order, not by name)
     # rename_map: named vector where names=original col, values=target base name
     if (!is.null(source_spec$rename_map) && length(source_spec$rename_map) > 0) {
@@ -104,17 +128,17 @@ extract_impact_variable <- function(matched_vect, source_spec, col_uid) {
       # Suffix already added above; skip the generic suffix addition below
       return(df)
     }
-    
+
   } else {
     stop("Unknown source type: '", src_type, "'")
   }
-  
+
   # Append slot suffix only to columns that don't already end with it.
   # This prevents double-suffixing when the user selects attributes that
   # already contain _before/_after in their name (e.g. "average_before").
   already_suffixed <- endsWith(names(df), paste0("_", slot))
   names(df)[!already_suffixed] <- paste0(names(df)[!already_suffixed], "_", slot)
-  
+
   df
 }
 
@@ -165,51 +189,54 @@ check_variable_consistency <- function(before_cols, after_cols) {
 }
 
 
-#' -----------------------------------------------------------------------------
-#' compute_contrast()
-#'
-#' Core (BA)CI contrast and p-value computation using data.table grouped
-#' operations for efficiency.
-#'
-#' Arguments:
-#'   dt             data.table. One row per matched unit, containing at minimum
-#'                    col_uid:       unique feature ID (if spatial_unit="individual")
-#'                    col_treatment: treatment indicator (see treat_value)
-#'                    effect_cols:   numeric columns to assess
-#'                  and (if spatial_unit="individual") either
-#'                    col_subclass:  MatchIt subclass
-#'                  or
-#'                    col_match_ids: comma-separated IDs of matched partners
-#'                    
-#'   col_uid        Character. Unique ID column.
-#'   col_treatment  Character. Treatment column.
-#'   col_match_ids  Character. Column with (comma-separated) matched partner IDs.
-#'   col_subclass   Character. Column indicating subclass
-#'   effect_cols    Character vector. Names of effect columns to assess.
-#'   spatial_unit   "individual" or "pooled".
-#'   treat_value    Numeric or character. Treatment value
-#'
-#' Returns a data.table:
-#'   individual: one row per impact unit with the uid column plus
-#'               <effect_col>_contrast and <effect_col>_pvalue columns.
-#'   pooled:     one row with <effect_col>_contrast and <effect_col>_pvalue.
-#' -----------------------------------------------------------------------------
-compute_contrast <- function(dt, col_uid, col_treatment, col_match_ids, col_subclass,
-                             effect_cols, spatial_unit = "individual", treat_value = 1) {
-  
+# -----------------------------------------------------------------------------
+# compute_baci()
+#
+# Core BACI contrast and p-value computation using data.table grouped
+# operations for efficiency.
+#
+# For the individual case, units are grouped by their MatchIt subclass
+# (column ".subclass" in the matched data). This avoids string-splitting
+# .match_ids and secondary row lookups: each subclass already contains
+# exactly the impact unit and its matched controls.
+# Fallback to .match_ids grouping when .subclass is absent (e.g. some
+# genetic matching configurations).
+#
+# Arguments:
+#   dt             data.table. One row per matched unit, containing at minimum:
+#                    col_uid       unique feature ID
+#                    col_treatment 0/1 treatment indicator (1 = impact)
+#                    ".subclass"   MatchIt subclass (preferred grouping key)
+#                    col_match_ids comma-separated IDs of matched partners
+#                                  (fallback grouping key)
+#                    effect_cols   numeric columns to assess
+#   col_uid        Character. Unique ID column.
+#   col_treatment  Character. Treatment column (0 = control, 1 = impact).
+#   col_match_ids  Character. Fallback column with matched partner IDs.
+#   effect_cols    Character vector. Names of effect columns to assess.
+#   spatial_unit   "individual" or "pooled".
+#
+# Returns a data.table:
+#   individual: one row per impact unit with the uid column plus
+#               <effect_col>_contrast and <effect_col>_pvalue columns.
+#   pooled:     one row with <effect_col>_contrast and <effect_col>_pvalue.
+# -----------------------------------------------------------------------------
+compute_baci <- function(dt, col_uid, col_treatment, col_match_ids,
+                         effect_cols, spatial_unit = "individual") {
+
   if (!requireNamespace("data.table", quietly = TRUE)) {
     stop("Package 'data.table' is required.")
   }
   if (!data.table::is.data.table(dt)) {
     dt <- data.table::as.data.table(dt)
   }
-  
+
   # -- Pooled --─────────────────────────────────────────────────────────────────
   # Two-sample t-test comparing all impact vs all control values per variable.
   if (spatial_unit == "pooled") {
     results <- lapply(effect_cols, function(ec) {
-      imp_vals  <- dt[get(col_treatment) %in%  treat_value, get(ec)]
-      ctrl_vals <- dt[!(get(col_treatment) %in% treat_value), get(ec)]
+      imp_vals  <- dt[get(col_treatment) == 1, get(ec)]
+      ctrl_vals <- dt[get(col_treatment) == 0, get(ec)]
       imp_vals  <- imp_vals[is.finite(imp_vals)]
       ctrl_vals <- ctrl_vals[is.finite(ctrl_vals)]
       contrast  <- mean(ctrl_vals, na.rm = TRUE) - mean(imp_vals, na.rm = TRUE)
@@ -225,43 +252,45 @@ compute_contrast <- function(dt, col_uid, col_treatment, col_match_ids, col_subc
     }))
     return(out)
   }
-  
-  # -- Individual --------------------------------------------------------------
-  # Step 1: expand match IDs into explicit pairs, if col_subclass is missing
-  if(missing(col_subclass)){
-    # Impact-control linkages are stored as comma-separated UIDs in col_match_ids.
-    # Here we (re)construct a long-format data.table (one row per impact-control pair,
-    # with a synthetic .grp column).
-    
-    impact_dt  <- dt[get(col_treatment) %in% treat_value]
-    control_dt <- dt[!(get(col_treatment) %in% treat_value)]
-    
-    pair_list <- lapply(seq_len(nrow(impact_dt)), function(i) {
-      imp_uid      <- as.character(impact_dt[[col_uid]][i])
-      match_str    <- as.character(impact_dt[[col_match_ids]][i])
-      partner_uids <- trimws(unlist(strsplit(match_str, ",")))
-      partner_uids <- partner_uids[nchar(partner_uids) > 0]
-      ctrl_rows    <- control_dt[as.character(get(col_uid)) %in% partner_uids]
-      imp_row      <- impact_dt[i]
-      if (nrow(ctrl_rows) == 0) return(NULL)
-      imp_row[,   .grp := imp_uid]
-      ctrl_rows[, .grp := imp_uid]
-      data.table::rbindlist(list(imp_row, ctrl_rows), fill = TRUE)
-    })
-    pair_dt <- data.table::rbindlist(Filter(Negate(is.null), pair_list),
-                                     fill = TRUE)
-    if (nrow(pair_dt) == 0) {
-      stop("Could not reconstruct pairs from col_match_ids",
-           "Check that input contains a valid match IDs column.")
-    }
-  } else {
-    pair_dt <- dt
-    setnames(pair_dt, col_subclass, ".grp")
+
+  # -- Individual ---------------------------------------------------------------
+  # The SpatVector stores impact-control linkage in .match_ids (comma-separated
+  # UIDs) rather than MatchIt subclass rows, to avoid duplicate control rows in
+  # the output geometry. Here we reconstruct a long-format data.table (one row
+  # per impact-control pair, with a synthetic .grp column) purely for the
+  # grouped t-test computation. The SpatVector format is unchanged.
+
+  # Step 1: expand .match_ids into explicit pairs
+  impact_dt  <- dt[get(col_treatment) == 1]
+  control_dt <- dt[get(col_treatment) == 0]
+
+  pair_list <- lapply(seq_len(nrow(impact_dt)), function(i) {
+    imp_uid      <- as.character(impact_dt[[col_uid]][i])
+    match_str    <- as.character(impact_dt[[col_match_ids]][i])
+    partner_uids <- trimws(unlist(strsplit(match_str, ",")))
+    partner_uids <- partner_uids[nchar(partner_uids) > 0]
+    ctrl_rows    <- control_dt[as.character(get(col_uid)) %in% partner_uids]
+    imp_row      <- impact_dt[i]
+    if (nrow(ctrl_rows) == 0) return(NULL)
+    imp_row[,   .grp := imp_uid]
+    ctrl_rows[, .grp := imp_uid]
+    data.table::rbindlist(list(imp_row, ctrl_rows), fill = TRUE)
+  })
+  pair_dt <- data.table::rbindlist(Filter(Negate(is.null), pair_list),
+                                   fill = TRUE)
+
+  if (nrow(pair_dt) == 0) {
+    stop("Could not reconstruct pairs from .match_ids. ",
+         "Check that the matched vector contains a valid .match_ids column.")
   }
-  
+
   # Step 2: grouped computation using data.table by=.grp
+  # We avoid .SDcols referencing ec by name to prevent data.table from
+  # including ec as a pass-through column alongside our list() results,
+  # which would create duplicate column names that break setnames().
+  # Instead, capture the column indices outside the by= call.
   treat_col_idx <- which(names(pair_dt) == col_treatment)
-  
+
   all_results <- lapply(effect_cols, function(ec) {
     ec_col_idx <- which(names(pair_dt) == ec)
     result <- pair_dt[
@@ -269,8 +298,8 @@ compute_contrast <- function(dt, col_uid, col_treatment, col_match_ids, col_subc
       {
         treat_vec <- .SD[[1]]
         ec_vec    <- .SD[[2]]
-        ctrl_val  <- ec_vec[is.finite(ec_vec) & treat_vec %in% treat_value]
-        imp_val   <- ec_vec[is.finite(ec_vec) & !(treat_vec %in% treat_value)]
+        ctrl_val  <- ec_vec[is.finite(ec_vec) & treat_vec == 0]
+        imp_val   <- ec_vec[is.finite(ec_vec) & treat_vec == 1]
         contrast  <- mean(ctrl_val, na.rm = TRUE) - mean(imp_val, na.rm = TRUE)
         pval <- if (length(ctrl_val) == 0 || length(imp_val) == 0) {
           NA_real_
@@ -288,16 +317,16 @@ compute_contrast <- function(dt, col_uid, col_treatment, col_match_ids, col_subc
     ]
     # Use unique temp names (.contrast/.pvalue) to avoid any clash with ec
     data.table::setnames(result,
-                         c(".contrast", ".pvalue"),
-                         c(paste0(ec, "_contrast"), paste0(ec, "_pvalue")))
+      c(".contrast", ".pvalue"),
+      c(paste0(ec, "_contrast"), paste0(ec, "_pvalue")))
     result
   })
-  
+
   # Step 3: merge results; .grp == impact unit UID
   out <- Reduce(function(a, b) merge(a, b, by = ".grp", all = TRUE),
                 all_results)
   data.table::setnames(out, ".grp", col_uid)
-  return(out)
+  out
 }
 
 
@@ -341,25 +370,25 @@ run_impact_assessment <- function(matched_vect,
                                   design         = "baci",
                                   spatial_unit   = "individual",
                                   progress_fun   = NULL) {
-  
+
   errors <- character(0)
   n_steps <- 4
   report  <- function(msg, step) {
     if (!is.null(progress_fun)) progress_fun(msg, step / n_steps)
   }
-  
+
   # -- Step 1: extract impact variables from external sources ---------------
   report("Extracting impact variables...", 1)
-  
+
   full_df  <- as.data.frame(matched_vect)
-  
+
   # Coerce treatment column to 0/1 using treat_value if supplied
   if (!is.null(treat_value) && nchar(as.character(treat_value)) > 0) {
     tv <- as.character(treat_value)
     full_df[[col_treatment]] <- as.integer(
       as.character(full_df[[col_treatment]]) == tv)
   }
-  
+
   # base_df carries only the key columns needed for matching/grouping.
   # Extracted impact variables are added separately so original attributes
   # with similar names (e.g. trend_before already in the vector) do not
@@ -367,7 +396,7 @@ run_impact_assessment <- function(matched_vect,
   key_cols <- unique(c(col_uid, col_treatment, col_match_ids))
   key_cols <- intersect(key_cols, names(full_df))
   base_df  <- full_df[, key_cols, drop = FALSE]
-  
+
   append_extracted <- function(slot_name) {
     src <- sources[[slot_name]]
     if (is.null(src)) return(NULL)
@@ -380,7 +409,7 @@ run_impact_assessment <- function(matched_vect,
       }
     )
   }
-  
+
   if (design == "baci") {
     before_df <- append_extracted("before")
     after_df  <- append_extracted("after")
@@ -392,15 +421,15 @@ run_impact_assessment <- function(matched_vect,
     }
     if (!is.null(before_df)) base_df <- cbind(base_df, before_df)
     if (!is.null(after_df))  base_df <- cbind(base_df, after_df)
-    
+
   } else {
     effect_df <- append_extracted("effect")
     if (!is.null(effect_df)) base_df <- cbind(base_df, effect_df)
   }
-  
+
   # -- Step 2: compute effect = after - before (BACI design) ----------------
   report("Computing effect variables...", 2)
-  
+
   if (design == "baci") {
     before_cols <- grep("_before$", names(base_df), value = TRUE)
     after_cols  <- grep("_after$",  names(base_df), value = TRUE)
@@ -438,18 +467,18 @@ run_impact_assessment <- function(matched_vect,
   } else {
     effect_cols <- grep("_effect$", names(base_df), value = TRUE)
   }
-  
+
   if (length(effect_cols) == 0) {
     errors <- c(errors, "No effect columns could be derived. Check source inputs.")
     return(list(result_vect = NULL, result_df = NULL,
                 effect_cols = character(0), errors = errors))
   }
-  
+
   # -- Step 3: compute BACI contrast and p-value ----------------------------
   report("Computing BACI contrast and p-value...", 3)
-  
+
   dt <- data.table::as.data.table(base_df)
-  
+
   baci_results <- tryCatch(
     compute_baci(dt, col_uid, col_treatment, col_match_ids,
                  effect_cols, spatial_unit),
@@ -458,51 +487,75 @@ run_impact_assessment <- function(matched_vect,
       NULL
     }
   )
-  
+
   # -- Step 4: assemble output ----------------------------------------------
   report("Assembling output...", 4)
-  
+
   if (spatial_unit == "pooled" || is.null(baci_results)) {
     # Pooled: return a plain data.frame (no per-unit geometry)
     out_df <- if (!is.null(baci_results)) as.data.frame(baci_results) else NULL
     return(list(result_vect = NULL, result_df = out_df,
                 effect_cols = effect_cols, errors = errors))
   }
-  
-  # Individual: attach BACI results to the original impact unit attributes.
-  # Use full_df (all original columns) as the base, add only the new BACI
-  # columns from baci_results to avoid any collision with existing columns.
+
+  # Individual: attach BACI results + before/after columns to original attributes.
+  # Columns to add:
+  #   1. before/after extracted columns from base_df (e.g. average_before, trend_after)
+  #   2. effect columns (e.g. average_effect)
+  #   3. BACI contrast and p-value columns
   baci_df     <- as.data.frame(baci_results)
-  new_cols    <- setdiff(names(baci_df), col_uid)   # contrast + pvalue cols only
+  baci_cols   <- setdiff(names(baci_df), col_uid)
+
+  # Collect before, after and effect columns from base_df for impact units only
+  impact_rows    <- base_df[[col_treatment]] == 1
+  base_df_impact <- base_df[impact_rows, , drop = FALSE]
+  # Exclude the key columns already in full_df
+  extra_cols  <- setdiff(names(base_df_impact), c(key_cols, names(full_df)))
+  # Include before/after/effect cols even if they overlap key_cols
+  before_after_effect <- grep("_before$|_after$|_effect$", names(base_df_impact),
+                               value = TRUE)
+  extra_cols  <- unique(c(extra_cols, before_after_effect))
+  extra_cols  <- intersect(extra_cols, names(base_df_impact))
+
   impact_full <- full_df[full_df[[col_treatment]] == 1, , drop = FALSE]
-  merged      <- merge(impact_full,
-                       baci_df[, c(col_uid, new_cols), drop = FALSE],
-                       by = col_uid, all.x = TRUE, sort = FALSE)
-  
+
+  # Add before/after/effect columns - skip any already present in impact_full
+  extra_cols <- setdiff(extra_cols, names(impact_full))
+  if (length(extra_cols) > 0) {
+    extra_df    <- base_df_impact[, extra_cols, drop = FALSE]
+    impact_full <- cbind(impact_full, extra_df)
+  }
+
+  # Exclude any baci cols already present in impact_full to prevent duplicates
+  baci_cols <- setdiff(baci_cols, names(impact_full))
+  merged <- merge(impact_full,
+                  baci_df[, c(col_uid, baci_cols), drop = FALSE],
+                  by = col_uid, all.x = TRUE, sort = FALSE)
+
   # Rebuild SpatVector for impact units only
   impact_idx  <- which(full_df[[col_treatment]] == 1)
   geom_impact <- matched_vect[impact_idx, ]
   geom_df     <- as.data.frame(geom_impact)
-  
+
   # Align merged to geometry order via UID
   merged_ordered <- merged[match(geom_df[[col_uid]], merged[[col_uid]]), ,
-                           drop = FALSE]
+                            drop = FALSE]
   rownames(merged_ordered) <- NULL
-  
+
   # Sanitise for terra
   for (cn in names(merged_ordered)) {
     if (is.factor(merged_ordered[[cn]])) {
       merged_ordered[[cn]] <- as.character(merged_ordered[[cn]])
     }
   }
-  
+
   geom_wkt <- terra::geom(geom_impact, wkt = TRUE)
   out_vect <- terra::vect(
     cbind(merged_ordered, geometry = geom_wkt),
     geom = "geometry",
     crs  = terra::crs(geom_impact)
   )
-  
+
   list(
     result_vect = out_vect,
     result_df   = merged_ordered,
