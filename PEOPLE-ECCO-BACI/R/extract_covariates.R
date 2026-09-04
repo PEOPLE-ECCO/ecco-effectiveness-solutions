@@ -648,6 +648,41 @@ run_extraction <- function(y,
           na.rm        = na_rm
         )
 
+      } else if (identical(src$type, "openeo_dem")) {
+        con <- tryCatch(
+          openeo_connect(
+            if (!is.null(src$backend_url)) { src$backend_url } else {
+              "https://openeo.dataspace.copernicus.eu"
+            }
+          ),
+          error = function(e) {
+            errors <<- c(errors, paste0("[", src_label, "] Auth: ",
+                                        conditionMessage(e)))
+            NULL
+          }
+        )
+        if (is.null(con)) {
+          NULL
+        } else {
+          tryCatch(
+            extract_openeo_dem(
+              y               = y,
+              terrain_params  = if (!is.null(src$terrain_params)) {
+                src$terrain_params
+              } else { "elevation" },
+              spatial_reducer = if (!is.null(src$reducer)) { src$reducer } else { "mean" },
+              col_uid         = col_uid,
+              con             = con,
+              progress_fun    = progress_fun
+            ),
+            error = function(e) {
+              errors <<- c(errors, paste0("[", src_label, "] ",
+                                          conditionMessage(e)))
+              NULL
+            }
+          )
+        }
+
       } else if (identical(src$type, "openeo")) {
         con <- tryCatch(
           openeo_connect(

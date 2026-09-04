@@ -159,10 +159,14 @@ extract_openeo <- function(y,
   }
 
   # -- Reproject y to WGS84 for openEO (always expects EPSG:4326) ------------
-  if (!terra::is.lonlat(y)) {
-    y_wgs <- terra::project(y, "EPSG:4326")
+  # GeoJSON format mandates EPSG:4326; always reproject regardless of input CRS
+  # to avoid writing UTM coordinates with an incorrect lon/lat CRS label.
+  # suppressWarnings: terra::is.lonlat warns on ambiguous CRS - we handle it.
+  is_lonlat <- suppressWarnings(terra::is.lonlat(y))
+  y_wgs <- if (!isTRUE(is_lonlat)) {
+    terra::project(y, "EPSG:4326")
   } else {
-    y_wgs <- y
+    y
   }
 
   # -- Spatial extent (bounding box) -----------------------------------------
@@ -178,12 +182,11 @@ extract_openeo <- function(y,
 
   # -- Export geometries as GeoJSON FeatureCollection -------------------------
   # Strip all attributes before export (geometry only) to minimise payload.
-  # Add a minimal sequential ID so rows can be aligned after extraction.
   y_geom          <- y_wgs
   y_geom$.tmp_uid <- as.character(seq_len(nrow(y_geom)))
   y_geom          <- y_geom[, ".tmp_uid"]
 
-  tmp_geojson     <- tempfile(fileext = ".geojson")
+  tmp_geojson <- tempfile(fileext = ".geojson")
   terra::writeVector(y_geom, tmp_geojson, filetype = "GeoJSON", overwrite = TRUE)
   geom_json <- jsonlite::read_json(tmp_geojson)
 
@@ -390,4 +393,205 @@ parse_aggregate_spatial_result <- function(raw, bands, n_features,
           "Got: ", class(raw), " length=", n_top,
           ". Expected ", n_features, " x ", n_bands, ". Returning NAs.")
   as.data.frame(matrix(NA_real_, nrow = n_features, ncol = n_bands))
+}
+
+
+# -----------------------------------------------------------------------------
+# extract_openeo_dem()
+#
+# Dedicated function for extracting terrain parameters from the Copernicus
+# 30m DEM on CDSE using openEO. Supports elevation, slope, aspect, and the
+# trigonometric aspect components northness (cos) and eastness (sin).
+#
+# Arguments:
+#   y                SpatVector. Input features (polygons or points).
+#   terrain_params   Character vector. Any of: "elevation", "slope", "aspect",
+#                    "northness", "eastness". "northness"/"eastness" imply aspect.
+#   spatial_reducer  Character. openEO process for spatial aggregation:
+#                    "mean", "median", "min", "max", "sum", "sd". Default "mean".
+#   col_uid          Character. UID column in y for row alignment.
+#   con              openEO connection object or NULL (triggers openeo_connect).
+#   backend_url      Character. CDSE URL.
+#   progress_fun     Function(msg) for Shiny notifications.
+#
+# Returns a data.frame with nrow(y) rows and one column per requested parameter.
+# -----------------------------------------------------------------------------
+extract_openeo_dem <- function(y,
+                               terrain_params  = "elevation",
+                               spatial_reducer = "mean",
+                               col_uid         = NULL,
+                               con             = NULL,
+                               backend_url     = "https://openeo.dataspace.copernicus.eu",
+                               progress_fun    = NULL) {
+
+  notify <- function(msg) {
+    message(msg)
+    if (!is.null(progress_fun)) { progress_fun(msg) }
+  }
+
+  if (!requireNamespace("openeo",   quietly = TRUE)) stop("Package 'openeo' required.")
+  if (!requireNamespace("jsonlite", quietly = TRUE)) stop("Package 'jsonlite' required.")
+
+  if (is.null(con)) { con <- openeo_connect(backend_url) }
+
+  # Normalise requested parameters
+  terrain_params <- unique(tolower(terrain_params))
+  need_aspect    <- any(terrain_params %in% c("aspect", "northness", "eastness"))
+  need_slope     <- "slope" %in% terrain_params
+  need_elevation <- "elevation" %in% terrain_params
+
+  # Reproject to WGS84
+  is_lonlat <- suppressWarnings(terra::is.lonlat(y))
+  y_wgs <- if (!isTRUE(is_lonlat)) terra::project(y, "EPSG:4326") else y
+
+  # Bounding box
+  ext  <- as.vector(terra::ext(y_wgs))
+  bbox <- list(west  = unname(ext[1]), east  = unname(ext[2]),
+               south = unname(ext[3]), north = unname(ext[4]))
+
+  # Export geometry (strip attributes, keep tmp uid for ordering)
+  y_geom          <- y_wgs
+  y_geom$.tmp_uid <- as.character(seq_len(nrow(y_geom)))
+  y_geom          <- y_geom[, ".tmp_uid"]
+  tmp_geojson     <- tempfile(fileext = ".geojson")
+  terra::writeVector(y_geom, tmp_geojson, filetype = "GeoJSON", overwrite = TRUE)
+  geom_json <- jsonlite::read_json(tmp_geojson)
+  p <- openeo::processes()
+
+  # Load DEM collection
+  cube <- p$load_collection(
+    id             = "COPERNICUS_30",
+    spatial_extent = bbox,
+    bands          = list("DEM")
+  )
+
+  # Reduce temporal dimension first - DEM is static but CDSE may return
+  # multiple timestamps. Using max preserves the highest elevation value.
+  cube_t <- p$reduce_dimension(
+    data      = cube,
+    dimension = "t",
+    reducer   = function(data, context) { p$max(data = data) }
+  )
+
+  # Spatial reducer helper
+  sp_reducer <- switch(spatial_reducer,
+    mean   = function(data, context) { p$mean(data) },
+    median = function(data, context) { p$median(data) },
+    min    = function(data, context) { p$min(data) },
+    max    = function(data, context) { p$max(data) },
+    sum    = function(data, context) { p$sum(data) },
+    sd     = function(data, context) { p$sd(data) },
+    function(data, context) { p$mean(data) }
+  )
+
+  # -- Build a single multi-band cube with all requested terrain parameters ----
+  # Merge all parameter cubes into one before aggregate_spatial so only a
+  # single compute_result() call is needed regardless of how many parameters
+  # are requested. Each band is renamed to its parameter name for clear parsing.
+  band_cubes  <- list()
+  band_labels <- character(0)
+
+  if (need_elevation) {
+    elev_cube <- p$rename_labels(data = cube_t, dimension = "bands",
+                                 target = list("elevation"))
+    band_cubes[["elevation"]] <- elev_cube
+    band_labels <- c(band_labels, "elevation")
+  }
+  if (need_slope) {
+    slope_cube <- p$slope(data = cube_t)
+    slope_cube <- p$rename_labels(data = slope_cube, dimension = "bands",
+                                  target = list("slope"))
+    band_cubes[["slope"]] <- slope_cube
+    band_labels <- c(band_labels, "slope")
+  }
+  if (need_aspect) {
+    # p$aspect() returns values in radians (from due North) per openEO spec,
+    # so no degree-to-radian conversion is needed for cos/sin.
+    # p$cos() and p$sin() operate element-wise on datacubes.
+    # Northness/eastness are computed here (before aggregate_spatial) so
+    # the spatial reducer sees cos/sin values, not aspect angles:
+    # mean(cos(aspect)) != cos(mean(aspect)).
+    aspect_cube <- p$aspect(data = cube_t)
+
+    if ("aspect" %in% terrain_params) {
+      asp_named <- p$rename_labels(data = aspect_cube, dimension = "bands",
+                                   target = list("aspect"))
+      band_cubes[["aspect"]] <- asp_named
+      band_labels <- c(band_labels, "aspect")
+    }
+
+    if ("northness" %in% terrain_params) {
+      north_cube <- p$cos(x = aspect_cube)
+      north_cube <- p$rename_labels(data = north_cube, dimension = "bands",
+                                    target = list("northness"))
+      band_cubes[["northness"]] <- north_cube
+      band_labels <- c(band_labels, "northness")
+    }
+
+    if ("eastness" %in% terrain_params) {
+      east_cube <- p$sin(x = aspect_cube)
+      east_cube <- p$rename_labels(data = east_cube, dimension = "bands",
+                                   target = list("eastness"))
+      band_cubes[["eastness"]] <- east_cube
+      band_labels <- c(band_labels, "eastness")
+    }
+  }
+
+  # Merge into one multi-band cube
+  combined_cube <- Reduce(
+    function(acc, cube) { p$merge_cubes(cube1 = acc, cube2 = cube) },
+    band_cubes
+  )
+
+  # Single aggregate_spatial + compute_result for all parameters
+  notify(paste0("openEO: computing terrain parameters (",
+                paste(band_labels, collapse = ", "), ")..."))
+  agg         <- p$aggregate_spatial(data = combined_cube,
+                                     geometries = geom_json,
+                                     reducer = sp_reducer)
+  tmp_out     <- tempfile(fileext = ".json")
+  result_proc <- p$save_result(agg, format = "JSON")
+
+  tryCatch(
+    openeo::compute_result(result_proc, output_file = tmp_out),
+    error = function(e) {
+      stop("openEO DEM compute_result() failed: ", conditionMessage(e))
+    }
+  )
+  notify("openEO: result received, parsing...")
+
+  raw    <- jsonlite::read_json(tmp_out, simplifyVector = FALSE)
+  result <- parse_aggregate_spatial_result(raw, bands = band_labels,
+                                           n_features = nrow(y),
+                                           time_reducer = "max")
+  names(result) <- band_labels
+
+  # -- Assemble output ---------------------------------------------------------
+  result_cols <- list()
+  if (need_elevation) {
+    result_cols[["elevation"]] <- as.numeric(result[["elevation"]])
+  }
+  if (need_slope) {
+    result_cols[["slope"]] <- as.numeric(result[["slope"]])
+  }
+  if (need_aspect) {
+    if ("aspect" %in% terrain_params) {
+      result_cols[["aspect"]] <- as.numeric(result[["aspect"]])
+    }
+    if ("northness" %in% terrain_params) {
+      result_cols[["northness"]] <- as.numeric(result[["northness"]])
+    }
+    if ("eastness" %in% terrain_params) {
+      result_cols[["eastness"]] <- as.numeric(result[["eastness"]])
+    }
+  }
+
+  out <- as.data.frame(result_cols)
+  names(out) <- paste0("DEM_", names(out))
+
+  if (!is.null(col_uid) && nchar(col_uid) > 0 && col_uid %in% names(y)) {
+    out[[col_uid]] <- as.character(as.data.frame(y)[[col_uid]])
+  }
+
+  out
 }

@@ -478,31 +478,51 @@
                 )
               )
             } else if (r$source_type == "openEO") {
-              tagList(
-                p(style = "font-size:12px; color:#555; margin-bottom:4px;",
-                  paste0("Collection: ", r$collection)),
-                selectInput(paste0("oe_bands_", i),
-                  label    = "Band(s)",
-                  choices  = r$lyr_choices,
-                  selected = r$sel_lyr,
-                  multiple = TRUE, width = "100%"),
-                selectInput(paste0("oe_reducer_", i),
-                  label    = "Spatial reducer",
-                  choices  = c("mean","median","min","max","sum","sd"),
-                  selected = r$fun, width = "100%")
-              )
-            } else if (r$source_type == "openEO") {
-              tagList(
-                p(style = "font-size:12px; color:#555; margin-bottom:4px;",
-                  paste0("Collection: ", r$collection)),
-                selectInput(paste0("oe_bands_", i),
-                  label    = "Band(s)", choices = r$lyr_choices,
-                  selected = r$sel_lyr, multiple = TRUE, width = "100%"),
-                selectInput(paste0("oe_reducer_", i),
-                  label    = "Spatial reducer",
-                  choices  = c("mean","median","min","max","sum","sd"),
-                  selected = r$fun, width = "100%")
-              )
+              is_dem <- isTRUE(r$collection == "COPERNICUS_30")
+              if (is_dem) {
+                tagList(
+                  p(style = "font-size:12px; color:#555; margin-bottom:4px;",
+                    "Collection: Copernicus DEM 30m"),
+                  checkboxGroupInput(paste0("oe_dem_params_", i),
+                    label    = "Terrain parameters",
+                    choices  = c("Elevation" = "elevation",
+                                 "Slope"     = "slope",
+                                 "Aspect"    = "aspect"),
+                    selected = if (!is.null(r$dem_params) && length(r$dem_params) > 0) {
+                      r$dem_params
+                    } else { "elevation" },
+                    inline = TRUE),
+                  conditionalPanel(
+                    condition = paste0("input['oe_dem_params_", i,
+                                       "'] && input['oe_dem_params_", i,
+                                       "'].indexOf('aspect') >= 0"),
+                    checkboxGroupInput(paste0("oe_dem_aspect_", i),
+                      label    = "Aspect components",
+                      choices  = c("Northness (cos)" = "northness",
+                                   "Eastness (sin)"  = "eastness"),
+                      selected = if (!is.null(r$dem_aspect)) r$dem_aspect else character(0),
+                      inline   = TRUE)
+                  ),
+                  selectInput(paste0("oe_reducer_", i),
+                    label    = "Spatial reducer",
+                    choices  = c("mean","median","min","max","sum","sd"),
+                    selected = if (!is.null(r$fun)) r$fun else "mean",
+                    width    = "100%")
+                )
+              } else {
+                tagList(
+                  p(style = "font-size:12px; color:#555; margin-bottom:4px;",
+                    paste0("Collection: ", r$collection)),
+                  selectInput(paste0("oe_bands_", i),
+                    label    = "Band(s)", choices = r$lyr_choices,
+                    selected = r$sel_lyr, multiple = TRUE, width = "100%"),
+                  selectInput(paste0("oe_reducer_", i),
+                    label    = "Spatial reducer",
+                    choices  = c("mean","median","min","max","sum","sd"),
+                    selected = if (!is.null(r$fun)) r$fun else "mean",
+                    width    = "100%")
+                )
+              }
             } else {
               # Local vector controls
               needs_attrs     <- r$vec_fun %in% c("mean","median","std","min","max","sum")
@@ -813,6 +833,22 @@
         }
       }, ignoreInit = TRUE, ignoreNULL = TRUE)
 
+      observeEvent(input[[paste0("oe_dem_params_", slot)]], {
+        current <- matchlyr_list()
+        if (slot <= length(current)) {
+          current[[slot]]$dem_params <- input[[paste0("oe_dem_params_", slot)]]
+          matchlyr_list(current)
+        }
+      }, ignoreInit = TRUE, ignoreNULL = TRUE)
+
+      observeEvent(input[[paste0("oe_dem_aspect_", slot)]], {
+        current <- matchlyr_list()
+        if (slot <= length(current)) {
+          current[[slot]]$dem_aspect <- input[[paste0("oe_dem_aspect_", slot)]]
+          matchlyr_list(current)
+        }
+      }, ignoreInit = TRUE, ignoreNULL = TRUE)
+
       observeEvent(input[[paste0("use_chunks_", slot)]], {
         current <- matchlyr_list()
         if (slot <= length(current)) {
@@ -925,16 +961,31 @@
       na_rm   <- !identical(input[[paste0("na_rm_", i)]], "FALSE")
 
       if (src$source_type == "openEO") {
-        list(
-          type         = "openeo",
-          collection   = src$collection,
-          bands        = input[[paste0("oe_bands_", i)]],
-          reducer      = {
-            rv <- input[[paste0("oe_reducer_", i)]]
-            if (!is.null(rv) && nchar(rv) > 0) { rv } else { "mean" }
-          },
-          layer_prefix = make_colname(src$collection)
-        )
+        rv <- input[[paste0("oe_reducer_", i)]]
+        reducer_val <- if (!is.null(rv) && nchar(rv) > 0) { rv } else { "mean" }
+        if (isTRUE(src$collection == "COPERNICUS_30")) {
+          dem_p  <- input[[paste0("oe_dem_params_", i)]]
+          dem_a  <- input[[paste0("oe_dem_aspect_",  i)]]
+          params <- unique(c(
+            if (!is.null(dem_p) && length(dem_p) > 0) dem_p else "elevation",
+            if (!is.null(dem_a) && length(dem_a) > 0) dem_a else character(0)
+          ))
+          list(
+            type           = "openeo_dem",
+            collection     = "COPERNICUS_30",
+            terrain_params = params,
+            reducer        = reducer_val,
+            layer_prefix   = "DEM"
+          )
+        } else {
+          list(
+            type         = "openeo",
+            collection   = src$collection,
+            bands        = input[[paste0("oe_bands_", i)]],
+            reducer      = reducer_val,
+            layer_prefix = make_colname(src$collection)
+          )
+        }
       } else if (src$source_type == "openEO") {
         list(
           type         = "openeo",
