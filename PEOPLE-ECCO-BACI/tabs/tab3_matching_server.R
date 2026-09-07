@@ -1,7 +1,7 @@
 # =============================================================================
 # tab3_matching_server.R
 # Server logic for Tab 3: Matching analysis
-# Sourced inside server() with local=TRUE — has access to input/output/session
+# Sourced inside server() with local=TRUE - has access to input/output/session
 
   # -- Tab 4: Matching input -------------------------------------------------
 
@@ -11,15 +11,24 @@
     if (input$match_input_source == "from_tab") {
       res <- extraction_result()
       if (is.null(res) || is.null(res$result)) return(NULL)
-      res$result
+      v <- res$result
+      if (!inherits(v, "SpatVector")) return(NULL)
+      v
     } else {
       if (is.null(input$match_vect_file)) return(NULL)
-      match_vect_from_file()
+      v <- match_vect_from_file()
+      if (!is.null(v) && !inherits(v, "SpatVector")) return(NULL)
+      v
     }
   })
 
   # Reactive for the file-upload path (mirrors Tab 2 pattern)
-  match_vect_from_file <- reactive({
+  # Cache the loaded SpatVector in a reactiveVal so file.rename() only runs
+  # once. A reactive re-evaluates on every read; file.rename() on an already-
+  # renamed file fails silently and returns a bad path to terra::vect().
+  match_vect_file_cache <- reactiveVal(NULL)
+
+  observeEvent(input$match_vect_file, {
     req(input$match_vect_file)
     paths    <- input$match_vect_file$datapath
     names_up <- input$match_vect_file$name
@@ -27,7 +36,19 @@
     file.rename(paths, new_paths)
     is_shp <- endsWith(tolower(names_up), ".shp")
     entry  <- if (any(is_shp)) { new_paths[is_shp] } else { new_paths[1] }
-    tryCatch(terra::vect(entry), error = function(e) {NULL})
+    result <- tryCatch(
+      terra::vect(entry),
+      error = function(e) {
+        showNotification(paste0("Could not load vector file: ",
+                                conditionMessage(e)), type = "error")
+        NULL
+      }
+    )
+    match_vect_file_cache(result)
+  }, ignoreNULL = TRUE)
+
+  match_vect_from_file <- reactive({
+    match_vect_file_cache()
   })
 
   # Status / metadata UI
@@ -379,26 +400,67 @@
   })
 
   # -- 3. Caliper -----------------------------------------------------------
-  # std.caliper is in a separate output so entering a caliper value does
-  # not reset the caliper input itself.
+  # Caliper values are read directly in click_matching with isolate().
+
   output$mi_caliper_ui <- renderUI({
     if (!input$mi_method %in% c("nearest","optimal","genetic","full","quick")) {
       return(NULL)
     }
-    tagList(
-      numericInput("mi_caliper",
-        label = "caliper (leave empty for no caliper)",
-        value = NA, min = 0, width = "100%"),
-      uiOutput("mi_std_caliper_ui")
-    )
-  })
+    covars       <- input$match_covars
+    if (is.null(covars) || length(covars) == 0) return(NULL)
+    show_overall <- mi_uses_distance()
 
-  output$mi_std_caliper_ui <- renderUI({
-    cal <- input$mi_caliper
-    if (is.null(cal) || is.na(cal)) return(NULL)
-    selectInput("mi_std_caliper",
-      label    = "std.caliper (caliper in SD units?)",
-      choices  = c("TRUE","FALSE"), selected = "TRUE", width = "100%")
+    # Build one row: label | numericInput | SD/raw selector
+    make_row <- function(v, label) {
+      safe_id <- gsub("[^a-zA-Z0-9_]", "_", v)
+      val_id  <- paste0("mi_cal_val_", safe_id)
+      std_id  <- paste0("mi_cal_std_", safe_id)
+      div(style = "display:flex; align-items:center; gap:8px; margin-bottom:4px;",
+        div(style = "flex:2; font-size:12px; color:#444; padding-top:8px;", label),
+        div(style = "flex:1;",
+          numericInput(val_id, label = NULL,
+            value = NA, min = 0, step = 0.1, width = "100%")
+        ),
+        div(style = "flex:1;",
+          selectInput(std_id, label = NULL,
+            choices  = c("SD units" = "TRUE", "Raw units" = "FALSE"),
+            selected = "TRUE", width = "100%")
+        )
+      )
+    }
+
+    tagList(
+      # Title matching other parameter labels
+      tags$label(style = "font-weight:600; font-size:13px;", "caliper"),
+      # Column headers
+      div(style = "display:flex; gap:8px; margin-top:4px; margin-bottom:2px;",
+        div(style = "flex:2;"),
+        div(style = "flex:1; font-size:11px; color:#888; text-align:center;",
+          "Value"),
+        div(style = "flex:1; font-size:11px; color:#888; text-align:center;",
+          "Units")
+      ),
+      # Overall distance row: only shown when method uses a distance metric
+      if (show_overall) make_row(".distance", "Overall distance") else NULL,
+      if (show_overall) {
+        div(class = "section-divider", style = "margin:6px 0;")
+      } else { NULL },
+      # Per-variable calipers: collapsed by default, triangle indicator from
+      # browser's native <details> disclosure widget
+      tags$details(
+        tags$summary(
+          style = "font-size:12px; color:#555; cursor:pointer; margin-bottom:6px;
+                   user-select:none; list-style:disclosure-closed;",
+          "Per-variable calipers"
+        ),
+        tagList(lapply(seq_along(covars), function(i) {
+          make_row(covars[i], covars[i])
+        }))
+      ),
+      p(style = "font-size:11px; color:#888; margin-top:6px;",
+        "Leave blank for no caliper. SD units = caliper in standard deviations ",
+        "of the variable (recommended). Raw units = original variable units.")
+    )
   })
 
   # -- 4. m.order (nearest only) --------------------------------------------
@@ -529,8 +591,11 @@
     treat   <- input$match_treatment
     covars  <- input$match_covars
 
-    if (is.null(v)) {
-      showNotification("No matching dataset loaded.", type = "error")
+    if (is.null(v) || !inherits(v, "SpatVector")) {
+      showNotification(
+        paste0("No valid spatial dataset loaded. Got: ",
+               class(v)[1], ". Please load a vector file."),
+        type = "error")
       return()
     }
     if (is.null(treat) || nchar(treat) == 0) {
@@ -550,23 +615,46 @@
 
     # distance group
     if (!input$mi_method %in% c("exact","cem","cardinality")) {
-      mi_args$distance <- input$mi_distance
+      if (!is.null(input$mi_distance) && length(input$mi_distance) > 0) {
+        mi_args$distance <- input$mi_distance
+      }
       lnk <- input$mi_link
       if (!is.null(lnk) && nchar(lnk) > 0) mi_args$link <- lnk
     }
 
     # replace + ratio
     rep_val <- input$mi_replace
-    if (!is.null(rep_val)) mi_args$replace <- as.logical(rep_val)
+    if (!is.null(rep_val) && length(rep_val) > 0 && nchar(rep_val) > 0) {
+      mi_args$replace <- as.logical(rep_val)
+    }
     rat_val <- input$mi_ratio
-    if (!is.null(rat_val) && !is.na(rat_val)) mi_args$ratio <- as.integer(rat_val)
+    if (!is.null(rat_val) && length(rat_val) > 0 && !is.na(rat_val)) {
+      mi_args$ratio <- as.integer(rat_val)
+    }
 
-    # caliper
-    cal_val <- input$mi_caliper
-    if (!is.null(cal_val) && !is.na(cal_val)) {
-      mi_args$caliper <- cal_val
-      std_cal <- input$mi_std_caliper
-      if (!is.null(std_cal)) mi_args$std.caliper <- as.logical(std_cal)
+    # caliper: read directly from inputs using isolate() to avoid
+    # creating reactive dependencies that could invalidate match_vect_data()
+    {
+      cal_vec <- numeric(0)
+      std_vec <- logical(0)
+      all_cal_vars <- c(".distance", covars)
+      for (cv in all_cal_vars) {
+        safe   <- gsub("[^a-zA-Z0-9_]", "_", cv)
+        val    <- isolate(input[[paste0("mi_cal_val_", safe)]])
+        std    <- isolate(input[[paste0("mi_cal_std_", safe)]])
+        if (!is.null(val) && length(val) > 0 && !is.na(val)) {
+          if (cv == ".distance") {
+            cal_vec <- c(cal_vec, val)
+          } else {
+            cal_vec <- c(cal_vec, setNames(val, cv))
+          }
+          std_vec <- c(std_vec, isTRUE(as.logical(std)))
+        }
+      }
+      if (length(cal_vec) > 0 && all(is.numeric(cal_vec))) {
+        mi_args$caliper     <- cal_vec
+        mi_args$std.caliper <- std_vec
+      }
     }
 
     # m.order
@@ -578,7 +666,7 @@
     if (!is.null(disc) && disc != "none") {
       mi_args$discard <- disc
       reest <- input$mi_reestimate
-      if (!is.null(reest)) mi_args$reestimate <- as.logical(reest)
+      if (!is.null(reest) && length(reest) > 0) mi_args$reestimate <- as.logical(reest)
     }
 
     # exact + antiexact
@@ -611,7 +699,7 @@
     }
     if (input$mi_method == "cem") {
       k2k_val <- input$mi_k2k
-      if (!is.null(k2k_val)) mi_args$k2k <- as.logical(k2k_val)
+      if (!is.null(k2k_val) && length(k2k_val) > 0) mi_args$k2k <- as.logical(k2k_val)
     }
 
     # distance.options: parse text field as R expression if provided
@@ -641,6 +729,7 @@
     on.exit(progress$close())
 
     treat_value <- input$match_treat_value
+
     result <- tryCatch(
       do.call(run_matching,
               c(list(x             = v,
