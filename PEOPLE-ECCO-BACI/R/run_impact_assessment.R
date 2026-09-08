@@ -285,19 +285,19 @@ compute_baci <- function(dt, col_uid, col_treatment, col_match_ids,
   }
 
   # Step 2: grouped computation using data.table by=.grp
-  # We avoid .SDcols referencing ec by name to prevent data.table from
-  # including ec as a pass-through column alongside our list() results,
-  # which would create duplicate column names that break setnames().
-  # Instead, capture the column indices outside the by= call.
-  treat_col_idx <- which(names(pair_dt) == col_treatment)
+  # Reference treatment and effect columns by name inside the expression
+  # to avoid any positional ambiguity with .SD[[1]]/.SD[[2]] that could
+  # scramble results when column order varies.
 
   all_results <- lapply(effect_cols, function(ec) {
-    ec_col_idx <- which(names(pair_dt) == ec)
+    # Capture column names as local variables for use inside data.table expr
+    treat_col_local <- col_treatment
+    ec_col_local    <- ec
     result <- pair_dt[
       !is.na(.grp),
       {
-        treat_vec <- .SD[[1]]
-        ec_vec    <- .SD[[2]]
+        treat_vec <- get(treat_col_local)
+        ec_vec    <- get(ec_col_local)
         ctrl_val  <- ec_vec[is.finite(ec_vec) & treat_vec == 0]
         imp_val   <- ec_vec[is.finite(ec_vec) & treat_vec == 1]
         contrast  <- mean(ctrl_val, na.rm = TRUE) - mean(imp_val, na.rm = TRUE)
@@ -312,10 +312,8 @@ compute_baci <- function(dt, col_uid, col_treatment, col_match_ids,
         }
         list(.contrast = contrast, .pvalue = pval)
       },
-      by = ".grp",
-      .SDcols = c(treat_col_idx, ec_col_idx)
+      by = ".grp"
     ]
-    # Use unique temp names (.contrast/.pvalue) to avoid any clash with ec
     data.table::setnames(result,
       c(".contrast", ".pvalue"),
       c(paste0(ec, "_contrast"), paste0(ec, "_pvalue")))
