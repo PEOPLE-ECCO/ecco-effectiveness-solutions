@@ -234,23 +234,81 @@ extract_local_raster <- function(x,
   }
 
   # -- Extract ----------------------------------------------------------------
+  # For polygon inputs use exactextractr::exact_extract() which computes
+  # exact fractional pixel coverage - faster and more accurate than
+  # terra::extract() for polygons. Points still use terra::extract().
   n          <- nrow(y)
   chunk_size <- if (is.null(chunk_size) || is.na(chunk_size)) { 500L } else { as.integer(chunk_size) }
 
-  if (use_chunks && n > chunk_size) {
-    chunks <- split(seq_len(n), ceiling(seq_len(n) / chunk_size))
-    result <- do.call(rbind, lapply(chunks, function(idx) {
-      terra::extract(x, y[idx, ], fun = terra_fun, method = method,
-                     ID = FALSE, ...)
-    }))
+  is_poly_input <- !is_point && !use_centroid
+
+  if (is_poly_input && requireNamespace("exactextractr", quietly = TRUE)) {
+    # exact_extract needs sf polygons. Use 'fun' (the original string argument)
+    # to map to exact_extract summary names - terra_fun is already resolved
+    # to an R function and can't be reliably mapped back to a string.
+    y_sf <- sf::st_as_sf(y)
+
+    ee_string_map <- c(
+      mean = "mean", median = "median", min = "min", max = "max",
+      sum = "sum", sd = "stdev", modal = "majority",
+      simple = "mean", bilinear = "mean"
+    )
+    fun_str  <- if (is.character(fun)) fun else ""
+    ee_named <- ee_string_map[fun_str]
+
+    if (!is.na(ee_named)) {
+      # Standard named summary: exact_extract uses coverage-weighted aggregation
+      result <- exactextractr::exact_extract(
+        x, y_sf,
+        fun           = unname(ee_named),
+        progress      = FALSE,
+        default_value = NA_real_
+      )
+      if (is.atomic(result)) { result <- data.frame(V1 = result) }
+    } else {
+      # Custom/fraction: wrap terra_fun in exact_extract's expected signature
+      # function(values, coverage_fractions) -> scalar per polygon
+      wrapped <- local({
+        tf <- terra_fun
+        function(values, coverage_fractions) {
+          keep <- !is.na(values) & coverage_fractions > 0
+          if (!any(keep)) return(NA_real_)
+          tf(values[keep], na.rm = TRUE)
+        }
+      })
+      result <- exactextractr::exact_extract(
+        x, y_sf,
+        fun           = wrapped,
+        progress      = FALSE,
+        default_value = NA_real_,
+        summarize_df  = FALSE
+      )
+      if (is.atomic(result)) { result <- data.frame(V1 = result) }
+    }
+
+
   } else {
-    result <- terra::extract(x, y, fun = terra_fun, method = method,
-                             ID = FALSE, ...)
+    # Points, centroids, or exactextractr not available: use terra::extract()
+    if (use_chunks && n > chunk_size) {
+      chunks <- split(seq_len(n), ceiling(seq_len(n) / chunk_size))
+      result <- do.call(rbind, lapply(chunks, function(idx) {
+        terra::extract(x, y[idx, ], fun = terra_fun, method = method,
+                       ID = FALSE, ...)
+      }))
+    } else {
+      result <- terra::extract(x, y, fun = terra_fun, method = method,
+                               ID = FALSE, ...)
+    }
   }
 
   # -- Rename columns ---------------------------------------------------------
   safe_names <- paste0(layer_prefix, "_", vapply(names(x), make_colname, character(1)))
-  names(result) <- safe_names
+  if (ncol(result) == length(safe_names)) {
+    names(result) <- safe_names
+  } else {
+    # exact_extract multi-band naming: band1.mean, band2.mean etc -> normalise
+    names(result) <- safe_names[seq_len(ncol(result))]
+  }
 
   result
 }
@@ -391,7 +449,8 @@ extract_local_vector <- function(x,
   x_is_point  <- any(x_geom_type %in% c("points"))
 
   if (y_is_poly && x_is_point) {
-    # -- Points in polygons: terra::extract is efficient and correct -----------
+    # -- Points in polygons: terra::extract aggregates point attributes --------
+    # (exact_extract is for rasters; terra::extract is correct here)
     x_sub  <- x[, use_attrs]
     result <- terra::extract(x_sub, y,
                              fun   = function(v) agg_fun(v),
