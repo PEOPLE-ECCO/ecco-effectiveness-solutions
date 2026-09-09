@@ -983,29 +983,33 @@
   }, striped = TRUE, hover = TRUE, bordered = TRUE, digits = 4)
 
   # Helper: compute fill colours and opacity for the results map.
-  # Reads impact_result() directly (not via baci_result_sf_val()) to avoid
-  # shared reactive chains that cause spurious invalidation of the selector.
+  # baci_map_colours: derives colours from baci_result_sf_val() - the same
+  # object used by leafletProxy - so cm$cols and cm$fill_op are always in
+  # the same row order as the features being rendered.
   baci_map_colours <- reactive({
+    sf_obj <- baci_result_sf_val()
     res    <- impact_result()
-    req(!is.null(res) && !is.null(res$result_vect))
-    df     <- as.data.frame(res$result_vect)
-    contrast_col <- if (!is.null(input$baci_map_var) && nchar(input$baci_map_var) > 0) {
+    req(!is.null(sf_obj) && !is.null(res))
+    df     <- sf::st_drop_geometry(sf_obj)
+
+    contrast_col <- if (!is.null(input$baci_map_var) &&
+                        nchar(input$baci_map_var) > 0 &&
+                        input$baci_map_var %in% names(df)) {
       input$baci_map_var
     } else {
       paste0(res$effect_cols[1], "_contrast")
     }
     if (!contrast_col %in% names(df)) return(NULL)
 
-    vals <- df[[contrast_col]]
-    rng  <- range(vals, na.rm = TRUE)
-    # Symmetric range for diverging palette
-    abs_max <- max(abs(rng), na.rm = TRUE)
-    pal <- leaflet::colorNumeric(
+    vals    <- df[[contrast_col]]
+    abs_max <- max(abs(range(vals, na.rm = TRUE)), na.rm = TRUE)
+    if (abs_max == 0) abs_max <- 1
+    pal  <- leaflet::colorNumeric(
       palette = c("#2980b9","white","#c0392b"),
       domain  = c(-abs_max, abs_max), na.color = "#aaaaaa")
     cols <- pal(vals)
 
-    # Significance greying: find matching p-value column
+    # Significance greying
     grey_nonsig <- isTRUE(input$baci_grey_nonsig)
     pval_col    <- sub("_contrast$", "_pvalue", contrast_col)
     fill_op <- if (grey_nonsig && pval_col %in% names(df)) {
@@ -1093,6 +1097,7 @@
     if (is.null(res) || is.null(res$result_vect) || is.null(sf_obj)) return()
     cm     <- baci_map_colours()
     if (is.null(cm)) return()
+    # df derived from same sf_obj as cm -- row order is guaranteed consistent
     df     <- sf::st_drop_geometry(sf_obj)
     geom_t <- unique(sf::st_geometry_type(sf_obj))
     is_pt  <- any(geom_t %in% c("POINT","MULTIPOINT"))
