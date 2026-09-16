@@ -10,6 +10,10 @@ RUN install2.r --error --skipinstalled \
     MatchIt \
     cobalt \
     ragg \
+    exactextractr \
+    jsonlite \
+    openeo \
+    markdown \
     && rm -rf /tmp/downloaded_packages
 
 WORKDIR /srv/shiny-server/PEOPLE-ECCO-BACI
