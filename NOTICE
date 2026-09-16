@@ -1,0 +1,64 @@
+ecco-effectiveness-solutions
+Copyright (C) 2026 PEOPLE-ECCO consortium
+
+This product is licensed under the GNU General Public License, version 3
+(GPL-3.0-only). See the LICENSE file for the full license text.
+
+The project is licensed as GPL-3.0 (rather than a more permissive license)
+because it bundles the R package "terra", which is GPL-3.0-only. GPL-3.0
+is compatible with every other dependency's license (see below), so it is
+the license under which the combined application may be distributed.
+
+This application is built on R and the following third-party R packages.
+Each package remains under its own upstream license; nothing here relicenses
+them. Full license text for an installed package is included with the
+package itself (typically at <library>/<package>/LICENSE or
+<library>/<package>/DESCRIPTION), and is also published on its CRAN page.
+
+Permissive licenses (MIT):
+  - shiny      https://cran.r-project.org/package=shiny
+  - bslib      https://cran.r-project.org/package=bslib
+  - leaflet    https://cran.r-project.org/package=leaflet
+  - ragg       https://cran.r-project.org/package=ragg
+  - jsonlite   https://cran.r-project.org/package=jsonlite
+
+Weak-copyleft license (MPL-2.0):
+  - data.table https://cran.r-project.org/package=data.table
+
+Apache License 2.0:
+  - exactextractr https://cran.r-project.org/package=exactextractr
+  - openeo        https://cran.r-project.org/package=openeo
+
+  Apache License 2.0
+  Copyright the respective exactextractr and openeo authors and contributors.
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use these files except in compliance with the License.
+  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+
+GPL-licensed (GPL-2 | GPL-3, used here under GPL-3):
+  - MatchIt    https://cran.r-project.org/package=MatchIt
+  - cobalt     https://cran.r-project.org/package=cobalt
+  - R interpreter
+
+GPL-3.0-only:
+  - terra      https://cran.r-project.org/package=terra
+
+Dual-licensed, used here under its permissive option (MIT):
+  - sf         https://cran.r-project.org/package=sf
+               License: GPL-2 | MIT + file LICENSE
+
+Runtime system libraries (via the rocker/geospatial base image):
+  - GDAL  (MIT/X-style license)  https://gdal.org/
+  - PROJ  (MIT license)          https://proj.org/
+  - GEOS  (LGPL-2.1-or-later)    https://libgeos.org/
+
+  GEOS is used as a dynamically linked runtime library only, consistent
+  with LGPL-2.1's linking provisions.
