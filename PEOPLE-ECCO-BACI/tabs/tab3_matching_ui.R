@@ -87,7 +87,7 @@ tab3_ui <- # -- Tab 3: Matching analysis ---------------------------------------
         ),
 
         column(7,
-          uiOutput("match_plot_card_ui"),
+          vector_plot_ui("tab3_vect_plot", card_title = "\U0001f5fa️ Attribute Preview"),
           uiOutput("match_multicol_output_ui")
         )
       ),

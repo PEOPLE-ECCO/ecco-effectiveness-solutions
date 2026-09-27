@@ -5,7 +5,9 @@
 
   # -- Vector: load ------------------------------------------------------------
 
-  vect_data <- reactive({
+  vect_data_cache <- reactiveVal(NULL)
+
+  observeEvent(input$geojson_file, {
     req(input$geojson_file)
     paths    <- input$geojson_file$datapath
     names_up <- input$geojson_file$name
@@ -16,8 +18,18 @@
     } else {
       new_paths[1]
     }
-    tryCatch(terra::vect(entry), error = function(e) {NULL})
-  })
+    result <- tryCatch(
+      terra::vect(entry),
+      error = function(e) {
+        showNotification(paste0("Could not load vector file: ",
+                                conditionMessage(e)), type = "error")
+        NULL
+      }
+    )
+    vect_data_cache(result)
+  }, ignoreNULL = TRUE)
+
+  vect_data <- reactive({ vect_data_cache() })
 
   # -- Vector: geometry info ----------------------------------------------------
 
@@ -83,103 +95,75 @@
   })
 
   # -- Vector: treatment attribute card ----------------------------------------
+  # REMOVED from UI (leftover from previous logic). Code preserved for reuse.
+  #
+  # output$select_ci_card_ui <- renderUI({
+  #   v <- vect_data()
+  #   if (is.null(v)) return(NULL)
+  #   attr_names <- names(v)
+  #   if (length(attr_names) == 0) return(NULL)
+  #   selectInput("ci_field", label = "Treatment attribute",
+  #     choices  = setNames(attr_names, attr_names),
+  #     selected = attr_names[1], width = "100%")
+  # })
 
-  output$select_ci_card_ui <- renderUI({
-    v <- vect_data()
-    if (is.null(v)) return(NULL)
-    attr_names <- names(v)
-    if (length(attr_names) == 0) return(NULL)
-    selectInput("ci_field", label = "Treatment attribute",
-      choices  = setNames(attr_names, attr_names),
-      selected = attr_names[1], width = "100%")
-  })
+  # -- Vector: unique ID checkbox + selector -----------------------------------
+  # REMOVED from Tab 2 card. Code preserved for reuse elsewhere.
+  #
+  # output$attr_card_ui <- renderUI({
+  #   v <- vect_data()
+  #   if (is.null(v)) return(NULL)
+  #   attr_names <- names(v)
+  #   if (length(attr_names) == 0) return(NULL)
+  #   tagList(
+  #     div(style = "display:flex; align-items:center; gap:10px;",
+  #       checkboxInput(inputId = "use_uid", label = NULL, value = FALSE),
+  #       p(style = "font-size:13px; color:#666; margin:0;",
+  #         "Use a unique feature ID attribute")
+  #     ),
+  #     conditionalPanel(
+  #       condition = "input.use_uid == true",
+  #       selectInput("uid_field", label = "Unique ID attribute",
+  #         choices  = setNames(attr_names, attr_names),
+  #         selected = NULL, width = "100%"),
+  #       uiOutput("uid_preview_ui")
+  #     )
+  #   )
+  # })
+  #
+  # -- Vector: UID preview (used by attr_card_ui above) -----------------------
+  #
+  # output$uid_preview_ui <- renderUI({
+  #   req(input$uid_field, vect_data())
+  #   v        <- vect_data()
+  #   col      <- input$uid_field
+  #   vals     <- as.character(as.data.frame(v)[[col]])
+  #   n_unique <- length(unique(vals))
+  #   n_total  <- length(vals)
+  #   is_unique <- (n_unique == n_total)
+  #   flag_col  <- if (is_unique) { "#1e8449" } else { "#c0392b" }
+  #   flag_icon <- if (is_unique) { "\u2714" } else { "\u26a0" }
+  #   flag_msg  <- if (is_unique) {
+  #     paste0("All ", n_total, " values are unique \u2014 good ID field.")
+  #   } else {
+  #     paste0(n_unique, " unique values across ", n_total, " features \u2014 not fully unique.")
+  #   }
+  #   preview_str <- paste(head(vals, 5), collapse = ", ")
+  #   sfx <- if (n_total > 5) { paste0(" (+", n_total - 5, " more)") } else { "" }
+  #   tagList(
+  #     div(class = "section-divider"),
+  #     div(class = "info-row",
+  #       span(style = paste0("color:", flag_col, "; font-weight:600; font-size:13px;"),
+  #         paste(flag_icon, flag_msg))
+  #     ),
+  #     div(class = "info-row", style = "margin-top:6px;",
+  #       span(class = "info-pill", paste0("Preview: ", preview_str, sfx))
+  #     )
+  #   )
+  # })
 
-  # -- Vector: unique ID card ---------------------------------------------------
-
-  output$attr_card_ui <- renderUI({
-    v <- vect_data()
-    if (is.null(v)) return(NULL)
-    attr_names <- names(v)
-    if (length(attr_names) == 0) return(NULL)
-    tagList(
-      div(style = "display:flex; align-items:center; gap:10px;",
-        checkboxInput(inputId = "use_uid", label = NULL, value = FALSE),
-        p(style = "font-size:13px; color:#666; margin:0;",
-          "Use a unique feature ID attribute")
-      ),
-      conditionalPanel(
-        condition = "input.use_uid == true",
-        selectInput("uid_field", label = "Unique ID attribute",
-          choices  = setNames(attr_names, attr_names),
-          selected = NULL, width = "100%"),
-        uiOutput("uid_preview_ui")
-      )
-    )
-  })
-
-  # -- Vector: UID preview ------------------------------------------------------
-
-  output$uid_preview_ui <- renderUI({
-    req(input$uid_field, vect_data())
-    v        <- vect_data()
-    col      <- input$uid_field
-    vals     <- as.character(as.data.frame(v)[[col]])
-    n_unique <- length(unique(vals))
-    n_total  <- length(vals)
-    is_unique <- (n_unique == n_total)
-    flag_col  <- if (is_unique) { "#1e8449" } else { "#c0392b" }
-    flag_icon <- if (is_unique) { "\u2714" } else { "\u26a0" }
-    flag_msg  <- if (is_unique) {
-      paste0("All ", n_total, " values are unique \u2014 good ID field.")
-    } else {
-      paste0(n_unique, " unique values across ", n_total, " features \u2014 not fully unique.")
-    }
-    preview_str <- paste(head(vals, 5), collapse = ", ")
-    sfx <- if (n_total > 5) { paste0(" (+", n_total - 5, " more)") } else { "" }
-    tagList(
-      div(class = "section-divider"),
-      div(class = "info-row",
-        span(style = paste0("color:", flag_col, "; font-weight:600; font-size:13px;"),
-          paste(flag_icon, flag_msg))
-      ),
-      div(class = "info-row", style = "margin-top:6px;",
-        span(class = "info-pill", paste0("Preview: ", preview_str, sfx))
-      )
-    )
-  })
-
-  # -- Vector: plot card --------------------------------------------------------
-
-  output$vector_plot_card_ui <- renderUI({
-    v <- vect_data()
-    if (is.null(v)) return(NULL)
-    attr_names <- names(v)
-    div(class = "card", style = "height:100%;",
-      div(class = "card-title",
-        span(class = "icon", "\U0001f5fa"), "Vector Preview"),
-      if (length(attr_names) > 0) {
-        selectInput("vec_plot_attr",
-          label    = "Attribute to visualise",
-          choices  = setNames(attr_names, attr_names),
-          selected = attr_names[1],
-          width    = "100%")
-      } else { NULL },
-      plotOutput("vector_plot", height = "480px")
-    )
-  })
-
-  output$vector_plot <- renderPlot({
-    v <- vect_data()
-    req(!is.null(v))
-    attr <- input$vec_plot_attr
-    if (!is.null(attr) && nchar(attr) > 0 && attr %in% names(v)) {
-      terra::plot(v, attr, main = attr)
-    } else if (length(names(v)) > 0) {
-      terra::plot(v, names(v)[1], main = names(v)[1])
-    } else {
-      terra::plot(v)
-    }
-  }, res = 96, bg = "white")
+  # -- Vector: plot card (shared module) ----------------------------------------
+  vector_plot_server("tab2_vect_plot", vect_data)
 
   output$retain_cols_ui <- renderUI({
     v <- vect_data()
@@ -1063,9 +1047,7 @@
         y            = v,
         base_attrs   = base_attrs,
         sources      = sources,
-        col_uid      = if (isTRUE(input$use_uid) && nchar(input$uid_field) > 0) {
-          input$uid_field
-        } else { NULL },
+        col_uid      = NULL,  # uid selector removed; reintroduce when needed
         progress_fun = shiny_progress
       ),
       error = function(e) {
@@ -1097,7 +1079,7 @@
 
     if (!is.null(res$result)) {
       n_feat <- nrow(res$result)
-      n_cols <- ncol(as.data.frame(res$result))
+      n_cols <- ncol(res$result)
       ok_msg <- div(
         style = "margin-top:14px;",
         p(style = "color:#1e8449; font-weight:600; font-size:13px;",

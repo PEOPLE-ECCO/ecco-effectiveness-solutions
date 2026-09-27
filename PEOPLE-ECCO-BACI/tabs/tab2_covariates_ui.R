@@ -32,14 +32,11 @@ tab2_ui <- # -- Tab 2: Extract matching covariates -----------------------------
               placeholder = "No file selected"
             ),
             uiOutput("geom_type_ui"),
-            # These appear once a file is loaded
-            uiOutput("select_ci_card_ui"),
-            uiOutput("attr_card_ui"),
             uiOutput("retain_cols_ui")
           )
         ),
         column(7,
-          uiOutput("vector_plot_card_ui")
+          vector_plot_ui("tab2_vect_plot", card_title = "\U0001f5fa️ Vector Preview")
         )
       ),
 

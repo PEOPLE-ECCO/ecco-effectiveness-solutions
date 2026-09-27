@@ -53,7 +53,7 @@
 #   # landuse (factor/character) would be in res$vars_dropped
 # -----------------------------------------------------------------------------
 check_multicollinearity <- function(x, vars, use = "pairwise.complete.obs") {
-
+  
   # -- Coerce input to data frame ---------------------------------------------
   if (inherits(x, "SpatVector")) {
     df <- as.data.frame(x)
@@ -62,7 +62,7 @@ check_multicollinearity <- function(x, vars, use = "pairwise.complete.obs") {
   } else {
     stop("x must be a SpatVector or data.frame.")
   }
-
+  
   # -- Validate vars ----------------------------------------------------------
   missing_vars <- setdiff(vars, names(df))
   if (length(missing_vars) > 0) {
@@ -71,13 +71,13 @@ check_multicollinearity <- function(x, vars, use = "pairwise.complete.obs") {
   if (length(vars) < 2) {
     stop("At least 2 variables are required.")
   }
-
+  
   # -- Separate numeric from categorical --------------------------------------
   df_sub    <- df[, vars, drop = FALSE]
   is_num    <- vapply(df_sub, is.numeric, logical(1))
   vars_used <- vars[is_num]
   vars_drop <- vars[!is_num]
-
+  
   if (length(vars_drop) > 0) {
     message("Excluding non-numeric variables from multicollinearity check: ",
             paste(vars_drop, collapse = ", "))
@@ -86,25 +86,25 @@ check_multicollinearity <- function(x, vars, use = "pairwise.complete.obs") {
     stop("At least 2 numeric variables are required. ",
          "All non-numeric variables were excluded.")
   }
-
+  
   df_num <- df_sub[, vars_used, drop = FALSE]
-
+  
   # -- Complete cases ---------------------------------------------------------
   complete_idx <- complete.cases(df_num)
   n_complete   <- sum(complete_idx)
   if (n_complete < 3) {
     stop("Fewer than 3 complete observations — cannot compute correlations.")
   }
-
+  
   # -- Correlation matrix -----------------------------------------------------
   # Use the full df_num with pairwise.complete.obs (or user choice) so the
   # matrix is always symmetric with 1 on the diagonal.
   cor_mat <- cor(df_num, use = use)
-
+  
   # -- VIF --------------------------------------------------------------------
   # Computed on complete cases only for consistency.
   df_complete <- df_num[complete_idx, , drop = FALSE]
-
+  
   vif_vals <- vapply(seq_along(vars_used), function(j) {
     y_j  <- df_complete[[j]]
     x_j  <- df_complete[, -j, drop = FALSE]
@@ -112,17 +112,17 @@ check_multicollinearity <- function(x, vars, use = "pairwise.complete.obs") {
     r2   <- summary(fit)$r.squared
     if (is.na(r2) || r2 >= 1) Inf else 1 / (1 - r2)
   }, numeric(1))
-
+  
   status <- ifelse(vif_vals >= 10, "Severe",
-            ifelse(vif_vals >= 5,  "Moderate", "OK"))
-
+                   ifelse(vif_vals >= 5,  "Moderate", "OK"))
+  
   vif_df <- data.frame(
     Covariate = vars_used,
     VIF       = round(vif_vals, 3),
     Status    = status,
     stringsAsFactors = FALSE
   )
-
+  
   list(
     cor_matrix   = cor_mat,
     vif          = vif_df,
@@ -147,10 +147,10 @@ check_multicollinearity <- function(x, vars, use = "pairwise.complete.obs") {
 # -----------------------------------------------------------------------------
 plot_cor_matrix <- function(cor_mat, cex_axis = 0.8, cex_text = 0.75,
                             max_label_chars = 20) {
-
+  
   n   <- ncol(cor_mat)
   nms <- colnames(cor_mat)
-
+  
   # Truncate long labels for display only — the matrix values are unchanged.
   # Labels longer than max_label_chars are shortened with a trailing ellipsis.
   trunc_label <- function(x, maxc) {
@@ -159,30 +159,32 @@ plot_cor_matrix <- function(cor_mat, cex_axis = 0.8, cex_text = 0.75,
            x)
   }
   lbl <- trunc_label(nms, max_label_chars)
-
+  
   # Margin size: based on truncated label length, capped to avoid overflow.
   max_lbl <- max(nchar(lbl))
   margin  <- min(max_lbl * cex_axis * 0.55 + 1, 12)   # cap at 12 lines
-
+  
   display_mat <- cor_mat[nrow(cor_mat):1, ]   # flip rows so row 1 is at top
-
+  
   old_par <- par(mar = c(margin, margin, 2, 1))
   on.exit(par(old_par))
-
+  
+  # image() maps z[i,j] -> x[i], y[j], so we must transpose display_mat so
+  # that matrix columns (x-axis) and rows (y-axis) are oriented correctly.
   image(
     x    = seq_len(n),
     y    = seq_len(n),
-    z    = display_mat,
+    z    = t(display_mat),
     col  = colorRampPalette(c("#c0392b", "white", "#2980b9"))(101),
     zlim = c(-1, 1),
     xaxt = "n", yaxt = "n",
     xlab = "", ylab = ""
   )
-
-  # x axis: column names (bottom), y axis: row names (left, reversed)
+  
+  # x axis: column names (bottom), y axis: row names (left, top-to-bottom)
   axis(1, at = seq_len(n), labels = lbl,       las = 2, cex.axis = cex_axis)
   axis(2, at = seq_len(n), labels = rev(lbl),  las = 1, cex.axis = cex_axis)
-
+  
   for (col_idx in seq_len(n)) {
     for (row_idx in seq_len(n)) {
       val   <- cor_mat[row_idx, col_idx]

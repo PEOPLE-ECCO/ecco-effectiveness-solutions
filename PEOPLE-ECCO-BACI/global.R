@@ -6,8 +6,11 @@ library(sf)
 library(exactextractr)
 library(data.table)
 library(jsonlite)
-# openeo loaded on demand to avoid startup delay
+library(viridis)
+library(RColorBrewer)
+library(openeo)
 
+source("R/plot_vector.R")
 source("R/extract_covariates.R")
 source("R/check_multicollinearity.R")
 source("R/run_matching.R")

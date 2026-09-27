@@ -61,7 +61,7 @@
       v <- res$matched_data
       div(class = "info-row", style = "margin-top:8px;",
         span(class = "info-pill", paste0(nrow(v), " matched units")),
-        span(class = "info-pill", paste0(ncol(as.data.frame(v)), " attributes")),
+        span(class = "info-pill", paste0(ncol(v), " attributes")),
         span(class = "info-pill", "From matching output")
       )
     } else {
@@ -74,7 +74,7 @@
       crs_name <- terra::crs(v, describe = TRUE)$name
       div(class = "info-row", style = "margin-top:8px;",
         span(class = "info-pill", paste0(nrow(v), " features")),
-        span(class = "info-pill", paste0(ncol(as.data.frame(v)), " attributes")),
+        span(class = "info-pill", paste0(ncol(v), " attributes")),
         if (!is.na(crs_name) && nchar(crs_name) > 0) {
           span(class = "info-pill", crs_name)
         } else { NULL }
@@ -82,37 +82,8 @@
     }
   })
 
-  # BACI plot card: attr selector at top, plot below
-  output$baci_plot_card_ui <- renderUI({
-    v <- baci_vect_data()
-    if (is.null(v)) return(NULL)
-    attr_names <- names(v)
-    div(class = "card", style = "height:100%;",
-      div(class = "card-title",
-        span(class = "icon", "\U0001f5fa"),
-        "Vector preview"
-      ),
-      if (length(attr_names) > 0) {
-        selectInput("baci_plot_attr",
-          label    = "Attribute to visualise",
-          choices  = setNames(attr_names, attr_names),
-          selected = attr_names[1],
-          width    = "100%")
-      } else { NULL },
-      plotOutput("baci_vect_plot", height = "480px")
-    )
-  })
-
-  output$baci_vect_plot <- renderPlot({
-    v <- baci_vect_data()
-    req(!is.null(v))
-    attr <- input$baci_plot_attr
-    if (!is.null(attr) && attr %in% names(v)) {
-      terra::plot(v, attr, main = attr)
-    } else {
-      terra::plot(v)
-    }
-  }, res = 96, bg = "white")
+  # -- Vector: plot card (shared module) ----------------------------------------
+  vector_plot_server("tab4_vect_plot", baci_vect_data)
 
   # -- Column role selectors for BACI input vector -------------------------
   output$baci_col_selectors_ui <- renderUI({
@@ -150,7 +121,7 @@
     v     <- baci_vect_data()
     treat <- input$baci_col_treatment
     if (is.null(v) || is.null(treat) || !treat %in% names(v)) return(NULL)
-    vals        <- sort(unique(na.omit(as.data.frame(v)[[treat]])))
+    vals        <- sort(unique(na.omit(terra::values(v, dataframe = FALSE)[[treat]])))
     if (length(vals) < 2) return(NULL)
     default_val <- if (all(vals %in% c(0, 1))) { "1" } else { as.character(vals[length(vals)]) }
     selectInput("baci_treat_value",

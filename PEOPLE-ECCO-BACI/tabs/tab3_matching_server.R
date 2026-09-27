@@ -63,7 +63,7 @@
       v <- res$result
       div(class = "info-row", style = "margin-top:8px;",
         span(class = "info-pill", paste0(nrow(v), " features")),
-        span(class = "info-pill", paste0(ncol(as.data.frame(v)), " attributes")),
+        span(class = "info-pill", paste0(ncol(v), " attributes")),
         span(class = "info-pill", "From Tab 3")
       )
     } else {
@@ -76,7 +76,7 @@
       crs_name <- terra::crs(v, describe = TRUE)$name
       div(class = "info-row", style = "margin-top:8px;",
         span(class = "info-pill", paste0(nrow(v), " features")),
-        span(class = "info-pill", paste0(ncol(as.data.frame(v)), " attributes")),
+        span(class = "info-pill", paste0(ncol(v), " attributes")),
         if (!is.na(crs_name) && nchar(crs_name) > 0) {
           span(class = "info-pill", crs_name)
         } else {
@@ -86,38 +86,8 @@
     }
   })
 
-  # Attribute selector for plot
-  # Plot card: attr selector at top, plot below
-  output$match_plot_card_ui <- renderUI({
-    v <- match_vect_data()
-    if (is.null(v)) return(NULL)
-    attr_names <- names(v)
-    div(class = "card", style = "height:100%;",
-      div(class = "card-title",
-        span(class = "icon", "\U0001f5fa"),
-        "Attribute preview"
-      ),
-      if (length(attr_names) > 0) {
-        selectInput("match_plot_attr",
-          label    = "Attribute to visualise",
-          choices  = setNames(attr_names, attr_names),
-          selected = attr_names[1],
-          width    = "100%")
-      } else { NULL },
-      plotOutput("match_vect_plot", height = "480px")
-    )
-  })
-
-  output$match_vect_plot <- renderPlot({
-    v    <- match_vect_data()
-    req(!is.null(v) && !is.character(v))
-    attr <- input$match_plot_attr
-    if (!is.null(attr) && attr %in% names(v)) {
-      terra::plot(v, attr, main = attr)
-    } else {
-      terra::plot(v)
-    }
-  }, res = 96, bg = "white")
+  # -- Vector: plot card (shared module) ----------------------------------------
+  vector_plot_server("tab3_vect_plot", match_vect_data)
 
   # -- Unique ID selector ----------------------------------------------------
   output$match_uid_ui <- renderUI({
@@ -147,7 +117,7 @@
     if (is.null(uid) || nchar(uid) == 0) return(NULL)
     v <- match_vect_data()
     if (is.null(v)) return(NULL)
-    vals <- as.data.frame(v)[[uid]]
+    vals <- terra::values(v, dataframe = FALSE)[[uid]]
     if (anyDuplicated(vals) > 0) {
       p(style = "color:#c0392b; font-size:12px; margin:2px 0 0 0;",
         paste0("! Column '", uid, "' has duplicate values and cannot be ",
@@ -183,8 +153,17 @@
     v     <- match_vect_data()
     treat <- input$match_treatment
     if (is.null(v) || is.null(treat) || !treat %in% names(v)) return(NULL)
-    vals  <- sort(unique(na.omit(as.data.frame(v)[[treat]])))
+    vals  <- sort(unique(na.omit(terra::values(v, dataframe = FALSE)[[treat]])))
     if (length(vals) < 2) return(NULL)
+    # Guard: treatment column should have very few distinct values.
+    # If it has more than 20, it is almost certainly not a valid treatment
+    # indicator — warn the user rather than rendering a huge dropdown.
+    if (length(vals) > 20) {
+      return(p(style = "color:#c0392b; font-size:12px; margin-top:4px;",
+        paste0("⚠ Selected treatment column has ", length(vals),
+               " distinct values. Treatment indicators should be binary ",
+               "(e.g. 0/1 or TRUE/FALSE). Please select a different column.")))
+    }
     # Default: if values are 0/1, pre-select 1; otherwise last (highest) value
     default_val <- if (all(vals %in% c(0, 1))) { "1" } else { as.character(vals[length(vals)]) }
     selectInput("match_treat_value",

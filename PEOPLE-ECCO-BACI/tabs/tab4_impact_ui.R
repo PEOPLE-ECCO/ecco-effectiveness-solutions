@@ -51,7 +51,7 @@ tab4_ui <- # -- Tab 6: Impact evaluation ---------------------------------------
           )
         ),
         column(7,
-          uiOutput("baci_plot_card_ui")
+          vector_plot_ui("tab4_vect_plot", card_title = "\U0001f5fa️ Vector Preview")
         )
       ),
 
